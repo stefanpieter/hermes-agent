@@ -482,8 +482,13 @@ export default function App() {
                 "border-b border-current/20",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-3">
                 <PluginSlot name="header-left" />
+                <img
+                  src="/kinni-logo.svg"
+                  alt="Kinni"
+                  className="h-7 w-auto shrink-0"
+                />
 
                 <Typography
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
