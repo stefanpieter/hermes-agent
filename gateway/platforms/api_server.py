@@ -794,6 +794,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -809,6 +810,9 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``parent_session_id`` preserves role-session lineage when API clients
+        spawn child sessions that should remain linked to a parent runtime.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -845,6 +849,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            parent_session_id=parent_session_id,
         )
         return agent
 
@@ -1017,6 +1022,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -1144,6 +1152,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                parent_session_id=parent_session_id,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1160,6 +1169,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                parent_session_id=parent_session_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1883,6 +1893,9 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = body.get("store", True)
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -2018,6 +2031,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                parent_session_id=parent_session_id,
             ))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -2048,6 +2062,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                parent_session_id=parent_session_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2448,6 +2463,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2471,6 +2487,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                parent_session_id=parent_session_id,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2644,6 +2661,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        parent_session_id = str(
+            body.get("parent_session_id") or request.headers.get("X-Hermes-Parent-Session-Id") or ""
+        ).strip() or None
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -2681,6 +2701,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
+                    parent_session_id=parent_session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,

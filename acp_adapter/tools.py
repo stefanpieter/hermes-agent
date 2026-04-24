@@ -48,6 +48,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_get_images": "read",
     # Agent internals
     "delegate_task": "execute",
+    "invoke_role": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
     "text_to_speech": "execute",
@@ -131,6 +132,16 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         action = str(args.get("action") or "manage").strip() or "manage"
         target = str(args.get("target") or "memory").strip() or "memory"
         return f"memory {action}: {target}"
+    if tool_name == "invoke_role":
+        role = str(args.get("role") or "").strip()
+        mode = str(args.get("execution_mode") or "").strip()
+        if role and mode:
+            return f"invoke role: {role} ({mode})"
+        if role:
+            return f"invoke role: {role}"
+        if mode:
+            return f"invoke role ({mode})"
+        return "invoke role"
     if tool_name == "execute_code":
         code = str(args.get("code") or "").strip()
         first_line = next((line.strip() for line in code.splitlines() if line.strip()), "")

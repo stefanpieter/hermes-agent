@@ -42,6 +42,7 @@ import {
   Wrench,
   X,
   Zap,
+  LayoutTemplate,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
@@ -59,6 +60,7 @@ import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
+import OrgChartPage from "@/pages/OrgChartPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
@@ -107,6 +109,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/org-chart": OrgChartPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -134,6 +137,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/org-chart", label: "Org Chart", icon: LayoutTemplate },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -184,6 +188,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Star,
   Code,
   Eye,
+  LayoutTemplate,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
