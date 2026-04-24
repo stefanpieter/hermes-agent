@@ -6771,7 +6771,12 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
-    from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.config import (
+        format_protected_update_message,
+        get_protected_update_context,
+        is_managed,
+        managed_error,
+    )
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -6779,6 +6784,17 @@ def cmd_update(args):
 
     if getattr(args, "check", False):
         _cmd_update_check()
+        return
+
+    protected_update = get_protected_update_context(PROJECT_ROOT)
+    if protected_update:
+        print(
+            format_protected_update_message(
+                protected_update,
+                action="update Hermes Agent",
+            ),
+            file=sys.stderr,
+        )
         return
 
     gateway_mode = getattr(args, "gateway", False)
