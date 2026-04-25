@@ -489,6 +489,11 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
+            try:
+                self._persist_token_snapshot(db, state)
+            except Exception:
+                logger.debug("Failed to persist ACP token snapshot", exc_info=True)
+
             # Replace stored messages with current history.
             db.clear_messages(state.session_id)
             for msg in state.history:
@@ -502,6 +507,130 @@ class SessionManager:
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+
+    @staticmethod
+    def _raw_agent_attr(obj: Any, name: str) -> Any:
+        try:
+            obj_vars = vars(obj)
+        except TypeError:
+            obj_vars = None
+        if isinstance(obj_vars, dict):
+            return obj_vars.get(name)
+        return getattr(obj, name, None)
+
+    @staticmethod
+    def _int_attr(obj: Any, name: str, default: int = 0) -> int:
+        value = SessionManager._raw_agent_attr(obj, name)
+        if value is None:
+            return default
+        try:
+            return int(value or 0)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _float_attr(obj: Any, name: str) -> float | None:
+        value = SessionManager._raw_agent_attr(obj, name)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _persist_token_snapshot(self, db, state: SessionState) -> None:
+        """Persist the ACP agent's cumulative token counters, when available."""
+        agent = state.agent
+        input_tokens = self._int_attr(agent, "session_input_tokens")
+        output_tokens = self._int_attr(agent, "session_output_tokens")
+        cache_read_tokens = self._int_attr(agent, "session_cache_read_tokens")
+        cache_write_tokens = self._int_attr(agent, "session_cache_write_tokens")
+        reasoning_tokens = self._int_attr(agent, "session_reasoning_tokens")
+        api_call_count = self._int_attr(agent, "session_api_calls")
+        estimated_cost_usd = self._float_attr(agent, "session_estimated_cost_usd")
+        actual_cost_usd = self._float_attr(agent, "session_actual_cost_usd")
+        cost_status = self._raw_agent_attr(agent, "session_cost_status")
+        cost_source = self._raw_agent_attr(agent, "session_cost_source")
+        pricing_version = self._raw_agent_attr(agent, "session_pricing_version")
+
+        has_usage_snapshot = any(
+            (
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                reasoning_tokens,
+                api_call_count,
+                estimated_cost_usd is not None,
+                actual_cost_usd is not None,
+                cost_status,
+                cost_source,
+                pricing_version,
+            )
+        )
+        if not has_usage_snapshot:
+            return
+
+        provider = getattr(agent, "provider", None)
+        base_url = getattr(agent, "base_url", None)
+        billing_mode = self._raw_agent_attr(agent, "session_billing_mode")
+        if not billing_mode and cost_status == "included":
+            billing_mode = "subscription_included"
+        model = state.model if isinstance(state.model, str) and state.model else None
+        if model is None:
+            agent_model = getattr(agent, "model", None)
+            model = agent_model if isinstance(agent_model, str) and agent_model else None
+
+        db.update_token_counts(
+            state.session_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            actual_cost_usd=actual_cost_usd,
+            cost_status=cost_status if isinstance(cost_status, str) else None,
+            cost_source=cost_source if isinstance(cost_source, str) else None,
+            pricing_version=pricing_version if isinstance(pricing_version, str) else None,
+            billing_provider=provider if isinstance(provider, str) else None,
+            billing_base_url=base_url if isinstance(base_url, str) else None,
+            billing_mode=billing_mode if isinstance(billing_mode, str) else None,
+            model=model,
+            api_call_count=api_call_count,
+            absolute=True,
+        )
+
+    def _seed_agent_token_snapshot(self, agent: Any, row: Dict[str, Any]) -> None:
+        """Seed restored ACP agents so absolute snapshots preserve prior usage."""
+        token_fields = {
+            "session_input_tokens": "input_tokens",
+            "session_output_tokens": "output_tokens",
+            "session_cache_read_tokens": "cache_read_tokens",
+            "session_cache_write_tokens": "cache_write_tokens",
+            "session_reasoning_tokens": "reasoning_tokens",
+            "session_api_calls": "api_call_count",
+        }
+        for attr, column in token_fields.items():
+            try:
+                setattr(agent, attr, int(row.get(column) or 0))
+            except Exception:
+                pass
+        cost_fields = {
+            "session_estimated_cost_usd": "estimated_cost_usd",
+            "session_actual_cost_usd": "actual_cost_usd",
+            "session_cost_status": "cost_status",
+            "session_cost_source": "cost_source",
+            "session_pricing_version": "pricing_version",
+            "session_billing_mode": "billing_mode",
+        }
+        for attr, column in cost_fields.items():
+            value = row.get(column)
+            if value is not None:
+                try:
+                    setattr(agent, attr, value)
+                except Exception:
+                    pass
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load a session from the database into memory, recreating the AIAgent."""
@@ -568,7 +697,9 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                parent_session_id=parent_session_id,
             )
+            self._seed_agent_token_snapshot(agent, row)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
@@ -647,6 +778,10 @@ class SessionManager:
             "parent_session_id": parent_session_id,
             "model": model or default_model,
         }
+
+        db = self._get_db()
+        if db is not None:
+            kwargs["session_db"] = db
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

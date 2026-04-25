@@ -455,6 +455,104 @@ class TestPersistence:
         assert restored.history[0].get("tool_calls") is not None
         assert restored.history[1].get("tool_call_id") == "tc_1"
 
+    def test_acp_agents_receive_session_db_for_token_persistence(self, tmp_path, monkeypatch):
+        """ACP-managed AIAgent instances should write token deltas to SessionDB."""
+        captured_kwargs = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured_kwargs["session_db"] is db
+
+    def test_save_session_persists_agent_token_snapshot(self, tmp_path):
+        """ACP session saves should snapshot cumulative agent token counters."""
+
+        def fake_agent():
+            return SimpleNamespace(
+                model="gpt-test",
+                provider="openai-codex",
+                base_url="https://codex.example/v1",
+                api_mode="chat_completions",
+                session_input_tokens=123,
+                session_output_tokens=45,
+                session_cache_read_tokens=6,
+                session_cache_write_tokens=7,
+                session_reasoning_tokens=8,
+                session_estimated_cost_usd=0.12,
+                session_cost_status="included",
+                session_cost_source="subscription",
+                session_api_calls=3,
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=fake_agent, db=db)
+        state = manager.create_session(cwd="/work")
+        manager.save_session(state.session_id)
+
+        row = db.get_session(state.session_id)
+        assert row["input_tokens"] == 123
+        assert row["output_tokens"] == 45
+        assert row["cache_read_tokens"] == 6
+        assert row["cache_write_tokens"] == 7
+        assert row["reasoning_tokens"] == 8
+        assert row["estimated_cost_usd"] == 0.12
+        assert row["cost_status"] == "included"
+        assert row["cost_source"] == "subscription"
+        assert row["billing_provider"] == "openai-codex"
+        assert row["billing_base_url"] == "https://codex.example/v1"
+        assert row["billing_mode"] == "subscription_included"
+        assert row["api_call_count"] == 3
+
+    def test_token_snapshot_failure_does_not_block_message_persistence(self, tmp_path, monkeypatch):
+        """Token snapshot failures should not prevent ACP history persistence."""
+
+        def fake_agent():
+            return SimpleNamespace(
+                model="gpt-test",
+                session_input_tokens=123,
+                session_output_tokens=45,
+                session_api_calls=1,
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=fake_agent, db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "keep this message"})
+
+        def fail_update_token_counts(*args, **kwargs):
+            raise RuntimeError("token snapshot failed")
+
+        monkeypatch.setattr(db, "update_token_counts", fail_update_token_counts)
+        manager.save_session(state.session_id)
+
+        messages = db.get_messages_as_conversation(state.session_id)
+        assert len(messages) == 1
+        assert messages[0]["content"] == "keep this message"
+
     def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
         """Restored ACP sessions should keep their original runtime provider."""
         runtime_choice = {"provider": "anthropic"}
