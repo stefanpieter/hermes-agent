@@ -174,6 +174,28 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
 
+    def test_execute_remote_truncates_backend_stderr_from_config(self):
+        class FakeEnv:
+            def execute(self, command, cwd=None, timeout=None):
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "stdout\n", "stderr": "ERR" * 1_000, "returncode": 1}
+                return {"output": "", "returncode": 0}
+
+        fake_thread = MagicMock()
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("hermes_cli.config.load_config", return_value={"tool_output": {"code_execution_stderr_bytes": 120}}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("raise SystemExit(1)", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("--- stderr ---", result["output"])
+        self.assertIn("STDERR TRUNCATED", result["output"])
+        self.assertLess(len(result["output"]), 500)
+
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
@@ -947,6 +969,29 @@ for i in range(15000):
         if "TRUNCATED" in output:
             self.assertIn("chars omitted", output)
             self.assertIn("total", output)
+
+    def test_stdout_truncation_limit_uses_tool_output_config(self):
+        """Dashboard-configured stdout limit should control execute_code truncation."""
+        code = '''
+print("HEAD_MARKER_START")
+print("x" * 2000)
+print("TAIL_MARKER_END")
+'''
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "tool_output": {
+                    "code_execution_stdout_bytes": 240,
+                    "code_execution_stderr_bytes": 500,
+                }
+            },
+        ):
+            result = self._run(code)
+        output = result["output"]
+        self.assertIn("TRUNCATED", output)
+        self.assertIn("HEAD_MARKER_START", output)
+        self.assertIn("TAIL_MARKER_END", output)
+        self.assertLess(len(output), 600)
 
 
 if __name__ == "__main__":

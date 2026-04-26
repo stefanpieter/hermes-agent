@@ -325,6 +325,32 @@ class TestMaybePersistToolResult:
         # Should have persisted since 60K > 30K
         assert PERSISTED_OUTPUT_TAG in result or "Truncated" in result
 
+    def test_uses_tool_output_config_when_threshold_not_provided(self):
+        """Dashboard-configured persistence limits should apply by default."""
+        content = "abcdefghij" * 500
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "tool_output": {
+                    "result_persist_threshold_chars": 20,
+                    "turn_budget_chars": 200_000,
+                    "preview_chars": 12,
+                }
+            },
+        ), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"tool_output": {"result_persist_threshold_chars": 20}},
+        ):
+            result = maybe_persist_tool_result(
+                content=content,
+                tool_name="terminal",
+                tool_use_id="tc_cfg",
+                env=None,
+            )
+
+        assert "Truncated" in result
+        assert len(result) < len(content)
+
     def test_unicode_content_survives(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}

@@ -167,8 +167,22 @@ _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 # Default timeout for browser commands (seconds)
 DEFAULT_COMMAND_TIMEOUT = 30
 
-# Max tokens for snapshot content before summarization
+# Max chars for snapshot content before summarization/truncation
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
+
+
+def _get_snapshot_summarize_threshold() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit(
+        "browser_snapshot_summarize_threshold", SNAPSHOT_SUMMARIZE_THRESHOLD
+    )
+
+
+def _get_snapshot_truncate_chars() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("browser_snapshot_chars", 8_000)
 
 # Commands that legitimately return empty stdout (e.g. close, record).
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
@@ -1678,7 +1692,7 @@ def _extract_relevant_content(
         return _truncate_snapshot(snapshot_text)
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: int | None = None) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
@@ -1692,6 +1706,9 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     Returns:
         Truncated text with indicator if truncated
     """
+    if max_chars is None:
+        max_chars = _get_snapshot_truncate_chars()
+
     if len(snapshot_text) <= max_chars:
         return snapshot_text
 
@@ -1868,7 +1885,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
-                if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+                if len(snapshot_text) > _get_snapshot_summarize_threshold():
                     snapshot_text = _truncate_snapshot(snapshot_text)
                 response["snapshot"] = snapshot_text
                 response["element_count"] = len(refs) if refs else 0
@@ -1918,9 +1935,10 @@ def browser_snapshot(
         refs = data.get("refs", {})
         
         # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
+        snapshot_threshold = _get_snapshot_summarize_threshold()
+        if len(snapshot_text) > snapshot_threshold and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        elif len(snapshot_text) > snapshot_threshold:
             snapshot_text = _truncate_snapshot(snapshot_text)
         
         response = {

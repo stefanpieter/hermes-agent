@@ -251,6 +251,76 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "file_read_max_chars": {
+        "type": "number",
+        "description": "read_file formatted-character safety limit before requiring offset+limit pagination",
+        "category": "tool_output",
+    },
+    "code_execution.timeout": {
+        "type": "number",
+        "description": "execute_code runtime limit in seconds",
+        "category": "tool_output",
+    },
+    "code_execution.max_tool_calls": {
+        "type": "number",
+        "description": "Maximum Hermes tool calls allowed inside one execute_code run",
+        "category": "tool_output",
+    },
+    "tool_output.max_bytes": {
+        "type": "number",
+        "description": "Foreground terminal() head+tail output truncation limit in characters",
+        "category": "tool_output",
+    },
+    "tool_output.max_lines": {
+        "type": "number",
+        "description": "Maximum lines read_file may return in a single paginated call",
+        "category": "tool_output",
+    },
+    "tool_output.max_line_length": {
+        "type": "number",
+        "description": "Maximum characters per line in read_file's line-numbered view",
+        "category": "tool_output",
+    },
+    "tool_output.code_execution_stdout_bytes": {
+        "type": "number",
+        "description": "execute_code stdout head+tail capture limit in bytes/characters",
+        "category": "tool_output",
+    },
+    "tool_output.code_execution_stderr_bytes": {
+        "type": "number",
+        "description": "execute_code stderr capture limit in bytes/characters",
+        "category": "tool_output",
+    },
+    "tool_output.browser_snapshot_chars": {
+        "type": "number",
+        "description": "browser_snapshot fallback truncation limit in characters",
+        "category": "tool_output",
+    },
+    "tool_output.browser_snapshot_summarize_threshold": {
+        "type": "number",
+        "description": "browser_snapshot size threshold before summarization or truncation",
+        "category": "tool_output",
+    },
+    "tool_output.camofox_snapshot_max_chars": {
+        "type": "number",
+        "description": "Camofox server-side snapshot page size before browser_snapshot handling",
+        "category": "tool_output",
+    },
+    "tool_output.result_persist_threshold_chars": {
+        "type": "number",
+        "description": "Per-tool result size above which Hermes spills output to disk and returns a preview",
+        "category": "tool_output",
+    },
+    "tool_output.turn_budget_chars": {
+        "type": "number",
+        "description": "Aggregate tool-result character budget per assistant turn before spilling large results",
+        "category": "tool_output",
+    },
+    "tool_output.preview_chars": {
+        "type": "number",
+        "description": "Inline preview size shown after a large tool result is persisted",
+        "category": "tool_output",
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -355,7 +425,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
-    "general", "agent", "terminal", "display", "delegation",
+    "general", "agent", "terminal", "tool_output", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]

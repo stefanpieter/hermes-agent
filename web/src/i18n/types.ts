@@ -348,6 +348,7 @@ export interface Translations {
       general: string;
       agent: string;
       terminal: string;
+      tool_output: string;
       display: string;
       delegation: string;
       memory: string;

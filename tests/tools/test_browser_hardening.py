@@ -215,6 +215,21 @@ class TestTruncateSnapshot:
         # Should mention how many lines were truncated
         assert "more line" in result.lower()
 
+    def test_default_truncation_limit_uses_tool_output_config(self):
+        from tools.browser_tool import _truncate_snapshot
+        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(40)]
+        snapshot = "\n".join(lines)
+        assert len(snapshot) > 300
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"tool_output": {"browser_snapshot_chars": 300}},
+        ):
+            result = _truncate_snapshot(snapshot)
+
+        assert "truncated" in result.lower()
+        assert len(result) <= 450
+
 
 # ---------------------------------------------------------------------------
 # Scroll optimization

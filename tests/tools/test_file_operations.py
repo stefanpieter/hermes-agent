@@ -201,6 +201,14 @@ class TestShellFileOpsHelpers:
         assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
+    def test_normalize_read_pagination_uses_tool_output_max_lines(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tool_output": {"max_lines": 5_000}},
+        )
+
+        assert normalize_read_pagination(offset=2, limit=5_000) == (2, 5_000)
+
     def test_normalize_search_pagination_clamps_invalid_values(self):
         assert normalize_search_pagination(offset=-10, limit=-5) == (0, 1)
         assert normalize_search_pagination(offset="bad", limit="bad") == (0, 50)
@@ -253,6 +261,18 @@ class TestShellFileOpsHelpers:
         long_line = "x" * (MAX_LINE_LENGTH + 100)
         result = file_ops._add_line_numbers(long_line)
         assert "[truncated]" in result
+
+    def test_add_line_numbers_uses_tool_output_max_line_length(self, file_ops, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"tool_output": {"max_line_length": 4_000}},
+        )
+        line = "x" * 3_000
+
+        result = file_ops._add_line_numbers(line)
+
+        assert "[truncated]" not in result
+        assert "x" * 3_000 in result
 
     def test_unified_diff(self, file_ops):
         old = "line1\nline2\nline3\n"

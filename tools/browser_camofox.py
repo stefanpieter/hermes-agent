@@ -43,9 +43,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
-_SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
+_SNAPSHOT_MAX_CHARS = 80_000  # default Camofox snapshot pagination limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+
+def _snapshot_max_chars() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("camofox_snapshot_max_chars", _SNAPSHOT_MAX_CHARS)
+
+
+def _snapshot_params(user_id: str) -> dict:
+    return {"userId": user_id, "maxChars": _snapshot_max_chars()}
 
 
 def get_camofox_url() -> str:
@@ -269,14 +279,14 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         try:
             snap_data = _get(
                 f"/tabs/{session['tab_id']}/snapshot",
-                params={"userId": session["user_id"]},
+                params=_snapshot_params(session["user_id"]),
             )
             snapshot_text = snap_data.get("snapshot", "")
             from tools.browser_tool import (
-                SNAPSHOT_SUMMARIZE_THRESHOLD,
+                _get_snapshot_summarize_threshold,
                 _truncate_snapshot,
             )
-            if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+            if len(snapshot_text) > _get_snapshot_summarize_threshold():
                 snapshot_text = _truncate_snapshot(snapshot_text)
             result["snapshot"] = snapshot_text
             result["element_count"] = snap_data.get("refsCount", 0)
@@ -307,7 +317,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
-            params={"userId": session["user_id"]},
+            params=_snapshot_params(session["user_id"]),
         )
 
         snapshot = data.get("snapshot", "")
@@ -315,12 +325,12 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
 
         # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
-            SNAPSHOT_SUMMARIZE_THRESHOLD,
+            _get_snapshot_summarize_threshold,
             _extract_relevant_content,
             _truncate_snapshot,
         )
 
-        if len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        if len(snapshot) > _get_snapshot_summarize_threshold():
             if user_task:
                 snapshot = _extract_relevant_content(snapshot, user_task)
             else:
@@ -458,7 +468,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
 
         data = _get(
             f"/tabs/{session['tab_id']}/snapshot",
-            params={"userId": session["user_id"]},
+            params=_snapshot_params(session["user_id"]),
         )
         snapshot = data.get("snapshot", "")
 
@@ -522,7 +532,7 @@ def camofox_vision(question: str, annotate: bool = False,
             try:
                 snap_data = _get(
                     f"/tabs/{session['tab_id']}/snapshot",
-                    params={"userId": session["user_id"]},
+                    params=_snapshot_params(session["user_id"]),
                 )
                 annotation_context = f"\n\nAccessibility tree (element refs for interaction):\n{snap_data.get('snapshot', '')[:3000]}"
             except Exception:

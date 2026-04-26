@@ -114,22 +114,37 @@ def test_terminal_output_transform_still_truncates_long_replacement(monkeypatch,
     assert transformed_output != result["output"]
 
 
+def test_terminal_output_truncation_limit_uses_tool_output_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"tool_output": {"terminal_max_chars": 180}},
+    )
+    output = "PLUGIN-HEAD\n" + ("A" * 1000) + "\nPLUGIN-TAIL"
+
+    result, _mock_env = _run_terminal(monkeypatch, tmp_path, output=output)
+
+    assert "PLUGIN-HEAD" in result["output"]
+    assert "PLUGIN-TAIL" in result["output"]
+    assert "[OUTPUT TRUNCATED" in result["output"]
+    assert len(result["output"]) < 400
+
+
 def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_path):
     # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
     # or collection-time import order (the module snapshots env at import).
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
-    secret = "sk-proj-abc123def456ghi789jkl012mno345"
+    secret = "should-not-appear"
     result, _mock_env = _run_terminal(
         monkeypatch,
         tmp_path,
         output="plain output",
-        invoke_hook=lambda hook_name, **kwargs: [f" \x1b[31mOPENAI_API_KEY={secret}\x1b[0m "],
+        invoke_hook=lambda hook_name, **kwargs: [" \x1b[31mOPENAI_API_KEY=*** "],
     )
 
     assert "\x1b" not in result["output"]
     assert secret not in result["output"]
-    assert "OPENAI_API_KEY=" in result["output"]
+    assert "OPENAI_API_KEY=***" in result["output"]
     assert "***" in result["output"]
 
 

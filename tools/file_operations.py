@@ -405,6 +405,18 @@ DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
 
 
+def _read_max_lines() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("read_file_max_lines", MAX_LINES)
+
+
+def _read_max_line_length() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("read_file_max_line_length", MAX_LINE_LENGTH)
+
+
 def _coerce_int(value: Any, default: int) -> int:
     """Best-effort integer coercion for tool pagination inputs."""
     try:
@@ -424,11 +436,9 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
     The upper bound on ``limit`` comes from ``tool_output.max_lines`` in
     config.yaml (defaults to the module-level ``MAX_LINES`` constant).
     """
-    from tools.tool_output_limits import get_max_lines
-    max_lines = get_max_lines()
     normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
     normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
-    normalized_limit = max(1, min(normalized_limit, max_lines))
+    normalized_limit = max(1, min(normalized_limit, _read_max_lines()))
     return normalized_offset, normalized_limit
 
 
@@ -551,6 +561,7 @@ class ShellFileOperations(FileOperations):
         max_line_length = get_max_line_length()
         lines = content.split('\n')
         numbered = []
+        max_line_length = _read_max_line_length()
         for i, line in enumerate(lines, start=start_line):
             # Truncate long lines
             if len(line) > max_line_length:

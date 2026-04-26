@@ -63,6 +63,7 @@ const CATEGORY_ICONS: Record<
   general: Settings,
   agent: Bot,
   terminal: Monitor,
+  tool_output: Wrench,
   display: Palette,
   delegation: Users,
   memory: Brain,

@@ -64,11 +64,23 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
-# Resource limit defaults (overridable via config.yaml → code_execution.*)
+# Resource limit defaults (overridable via config.yaml)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
+
+
+def _stdout_limit_bytes() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("code_execution_stdout_bytes", MAX_STDOUT_BYTES)
+
+
+def _stderr_limit_bytes() -> int:
+    from tools.tool_output_config import get_tool_output_limit
+
+    return get_tool_output_limit("code_execution_stderr_bytes", MAX_STDERR_BYTES)
 
 
 def check_sandbox_requirements() -> bool:
@@ -832,6 +844,7 @@ def _execute_remote(
         )
 
         stdout_text = script_result.get("output", "")
+        stderr_text = script_result.get("stderr", "")
         exit_code = script_result.get("returncode", -1)
         status = "success"
 
@@ -874,9 +887,10 @@ def _execute_remote(
     # --- Post-process output (same as local path) ---
 
     # Truncate stdout to cap
-    if len(stdout_text) > MAX_STDOUT_BYTES:
-        head_bytes = int(MAX_STDOUT_BYTES * 0.4)
-        tail_bytes = MAX_STDOUT_BYTES - head_bytes
+    stdout_limit = _stdout_limit_bytes()
+    if len(stdout_text) > stdout_limit:
+        head_bytes = int(stdout_limit * 0.4)
+        tail_bytes = stdout_limit - head_bytes
         head = stdout_text[:head_bytes]
         tail = stdout_text[-tail_bytes:]
         omitted = len(stdout_text) - len(head) - len(tail)
@@ -887,13 +901,24 @@ def _execute_remote(
             + tail
         )
 
+    stderr_limit = _stderr_limit_bytes()
+    if len(stderr_text) > stderr_limit:
+        omitted = len(stderr_text) - stderr_limit
+        stderr_text = (
+            stderr_text[:stderr_limit]
+            + f"\n\n... [STDERR TRUNCATED - {omitted:,} chars omitted "
+            f"out of {len(stderr_text):,} total] ..."
+        )
+
     # Strip ANSI escape sequences
     from tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
+    stderr_text = strip_ansi(stderr_text)
 
     # Redact secrets
     from agent.redact import redact_sensitive_text
     stdout_text = redact_sensitive_text(stdout_text)
+    stderr_text = redact_sensitive_text(stderr_text)
 
     # Build response
     result: Dict[str, Any] = {
@@ -922,7 +947,9 @@ def _execute_remote(
         )
     elif exit_code != 0:
         result["status"] = "error"
-        result["error"] = f"Script exited with code {exit_code}"
+        result["error"] = stderr_text or f"Script exited with code {exit_code}"
+        if stderr_text:
+            result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1109,8 +1136,10 @@ def execute_code(
         # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
         # and a rolling window of the last TAIL_BYTES so the final print()
         # output is never lost.  Stderr keeps head-only (errors appear early).
-        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
-        _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
+        stdout_limit = _stdout_limit_bytes()
+        stderr_limit = _stderr_limit_bytes()
+        _STDOUT_HEAD_BYTES = int(stdout_limit * 0.4)   # 40% head
+        _STDOUT_TAIL_BYTES = stdout_limit - _STDOUT_HEAD_BYTES  # 60% tail
 
         def _drain(pipe, chunks, max_bytes):
             """Simple head-only drain (used for stderr)."""
@@ -1154,8 +1183,14 @@ def execute_code(
                     tail_collected += len(data)
                     # Evict old tail data to stay within tail_bytes budget
                     while tail_collected > tail_bytes and tail_buf:
+                        excess = tail_collected - tail_bytes
                         oldest = tail_buf.popleft()
-                        tail_collected -= len(oldest)
+                        if len(oldest) <= excess:
+                            tail_collected -= len(oldest)
+                        else:
+                            tail_buf.appendleft(oldest[excess:])
+                            tail_collected -= excess
+                            break
             except (ValueError, OSError):
                 pass
             # Transfer final tail to output list
@@ -1171,7 +1206,7 @@ def execute_code(
             daemon=True
         )
         stderr_reader = threading.Thread(
-            target=_drain, args=(proc.stderr, stderr_chunks, MAX_STDERR_BYTES), daemon=True
+            target=_drain, args=(proc.stderr, stderr_chunks, stderr_limit), daemon=True
         )
         stdout_reader.start()
         stderr_reader.start()
@@ -1209,7 +1244,7 @@ def execute_code(
 
         # Assemble stdout with head+tail truncation
         total_stdout = stdout_total_bytes[0]
-        if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
+        if total_stdout > stdout_limit and stdout_tail:
             omitted = total_stdout - len(stdout_head) - len(stdout_tail)
             truncated_notice = (
                 f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "

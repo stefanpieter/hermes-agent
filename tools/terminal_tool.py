@@ -2063,8 +2063,8 @@ def terminal_tool(
                 pass
             
             # Truncate output if too long, keeping both head and tail
-            from tools.tool_output_limits import get_max_bytes
-            MAX_OUTPUT_CHARS = get_max_bytes()
+            from tools.tool_output_config import get_tool_output_limit
+            MAX_OUTPUT_CHARS = get_tool_output_limit("terminal_max_chars", 50_000)
             if len(output) > MAX_OUTPUT_CHARS:
                 head_chars = int(MAX_OUTPUT_CHARS * 0.4)  # 40% head (error messages often appear early)
                 tail_chars = MAX_OUTPUT_CHARS - head_chars  # 60% tail (most recent/relevant output)

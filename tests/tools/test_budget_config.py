@@ -18,6 +18,7 @@ from tools.budget_config import (
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
+    get_runtime_budget_config,
 )
 
 
@@ -174,3 +175,25 @@ class TestResolveThreshold:
         """Canonical case: read_file must always return inf."""
         cfg = BudgetConfig()
         assert cfg.resolve_threshold("read_file") == float("inf")
+
+
+class TestRuntimeBudgetConfig:
+    def test_default_persist_threshold_in_raw_config_does_not_override_registry(self):
+        """Dashboard/migration-saved defaults should preserve registry thresholds."""
+        raw = {"tool_output": {"result_persist_threshold_chars": DEFAULT_RESULT_SIZE_CHARS}}
+        with patch("hermes_cli.config.load_config", return_value=raw), \
+             patch("hermes_cli.config.read_raw_config", return_value=raw):
+            cfg = get_runtime_budget_config()
+
+        assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
+        assert cfg.tool_overrides == {}
+
+    def test_nondefault_persist_threshold_overrides_registry_for_nonpinned_tools(self):
+        raw = {"tool_output": {"result_persist_threshold_chars": 200_000}}
+        with patch("hermes_cli.config.load_config", return_value=raw), \
+             patch("hermes_cli.config.read_raw_config", return_value=raw), \
+             patch("tools.registry.registry.get_all_tool_names", return_value=["terminal", "read_file"]):
+            cfg = get_runtime_budget_config()
+
+        assert cfg.default_result_size == 200_000
+        assert cfg.tool_overrides == {"terminal": 200_000}

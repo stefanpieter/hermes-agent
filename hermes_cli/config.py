@@ -695,24 +695,27 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
-    # Tool-output truncation thresholds. When terminal output or a
-    # single read_file page exceeds these limits, Hermes truncates the
-    # payload sent to the model (keeping head + tail for terminal,
-    # enforcing pagination for read_file). Tuning these trades context
-    # footprint against how much raw output the model can see in one
-    # shot. Ported from anomalyco/opencode PR #23770.
-    #
-    # - max_bytes:       terminal_tool output cap, in chars
-    #                    (default 50_000 ≈ 12-15K tokens).
-    # - max_lines:       read_file pagination cap — the maximum `limit`
-    #                    a single read_file call can request before
-    #                    being clamped (default 2000).
-    # - max_line_length: per-line cap applied when read_file emits a
-    #                    line-numbered view (default 2000 chars).
+    # Tool output limits surfaced in the dashboard. These settings are kept in
+    # config.yaml so local preferences survive source-code updates.
     "tool_output": {
+        # Documented common caps: terminal output, read_file limit, and line width.
         "max_bytes": 50_000,
-        "max_lines": 2000,
-        "max_line_length": 2000,
+        "max_lines": 2_000,
+        "max_line_length": 2_000,
+        # execute_code stdout/stderr capture caps. The tool keeps head+tail for stdout.
+        "code_execution_stdout_bytes": 50_000,
+        "code_execution_stderr_bytes": 10_000,
+        # Browser accessibility snapshots above the threshold are summarized or
+        # truncated to browser_snapshot_chars.
+        "browser_snapshot_chars": 8_000,
+        "browser_snapshot_summarize_threshold": 8_000,
+        # Camofox server-side snapshot pagination before normal snapshot handling.
+        "camofox_snapshot_max_chars": 80_000,
+        # Large tool-result persistence: per-result threshold, per-turn aggregate
+        # budget, and inline preview size after spilling content to disk.
+        "result_persist_threshold_chars": 100_000,
+        "turn_budget_chars": 200_000,
+        "preview_chars": 1_500,
     },
 
     # Tool loop guardrails nudge models when they repeat failed or
@@ -1311,6 +1314,8 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        "timeout": 300,
+        "max_tool_calls": 50,
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.

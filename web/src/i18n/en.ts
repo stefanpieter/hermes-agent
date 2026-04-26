@@ -344,6 +344,7 @@ export const en: Translations = {
       general: "General",
       agent: "Agent",
       terminal: "Terminal",
+      tool_output: "Tool Output",
       display: "Display",
       delegation: "Delegation",
       memory: "Memory",

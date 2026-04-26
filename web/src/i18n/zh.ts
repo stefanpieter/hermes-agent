@@ -340,6 +340,7 @@ export const zh: Translations = {
       general: "通用",
       agent: "代理",
       terminal: "终端",
+      tool_output: "工具输出",
       display: "显示",
       delegation: "委托",
       memory: "记忆",

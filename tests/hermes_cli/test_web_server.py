@@ -205,11 +205,59 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def test_get_config_schema_exposes_tool_output_limits(self):
+        """Dashboard config form should expose persistent tool-output limits."""
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        data = resp.json()
+        schema = data["fields"]
+
+        for key in (
+            "file_read_max_chars",
+            "code_execution.timeout",
+            "code_execution.max_tool_calls",
+            "tool_output.max_bytes",
+            "tool_output.max_lines",
+            "tool_output.max_line_length",
+            "tool_output.code_execution_stdout_bytes",
+            "tool_output.code_execution_stderr_bytes",
+            "tool_output.browser_snapshot_chars",
+            "tool_output.browser_snapshot_summarize_threshold",
+            "tool_output.camofox_snapshot_max_chars",
+            "tool_output.result_persist_threshold_chars",
+            "tool_output.turn_budget_chars",
+            "tool_output.preview_chars",
+        ):
+            assert key in schema
+            assert schema[key]["type"] == "number"
+            assert schema[key]["category"] == "tool_output"
+
+        assert "tool_output" in data["category_order"]
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
         defaults = resp.json()
         assert "model" in defaults
+
+    def test_get_config_defaults_include_tool_output_limits(self):
+        """Defaults endpoint backs dashboard persistence for new installs."""
+        resp = self.client.get("/api/config/defaults")
+        assert resp.status_code == 200
+        defaults = resp.json()
+        assert defaults["tool_output"] == {
+            "max_bytes": 50_000,
+            "max_lines": 2_000,
+            "max_line_length": 2_000,
+            "code_execution_stdout_bytes": 50_000,
+            "code_execution_stderr_bytes": 10_000,
+            "browser_snapshot_chars": 8_000,
+            "browser_snapshot_summarize_threshold": 8_000,
+            "camofox_snapshot_max_chars": 80_000,
+            "result_persist_threshold_chars": 100_000,
+            "turn_budget_chars": 200_000,
+            "preview_chars": 1_500,
+        }
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
