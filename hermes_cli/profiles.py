@@ -170,6 +170,34 @@ def _get_active_profile_path() -> Path:
     return _get_default_hermes_home() / "active_profile"
 
 
+def _get_default_profile_name_path() -> Path:
+    """Return the path storing the display name for the root profile."""
+    return _get_default_hermes_home() / "default_profile_name"
+
+
+def get_default_profile_name() -> str:
+    """Return the user-facing name for the root ``~/.hermes`` profile.
+
+    ``default`` remains a backwards-compatible alias, but users may rename the
+    root profile to a real profile name such as ``kinni`` without cloning data
+    into ``~/.hermes/profiles/<name>``.
+    """
+    path = _get_default_profile_name_path()
+    try:
+        name = path.read_text().strip()
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
+        return "default"
+
+    if name and name != "default" and _PROFILE_ID_RE.match(name):
+        return name
+    return "default"
+
+
+def _is_default_profile_name(name: str) -> bool:
+    """Return True when *name* refers to the root profile."""
+    return name == "default" or name == get_default_profile_name()
+
+
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
     return Path.home() / ".local" / "bin"
@@ -218,7 +246,7 @@ def validate_profile_name(name: str) -> None:
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
-    if canon == "default":
+    if _is_default_profile_name(canon):
         return _get_default_hermes_home()
     return _get_profiles_root() / canon
 
@@ -226,7 +254,7 @@ def get_profile_dir(name: str) -> Path:
 def profile_exists(name: str) -> bool:
     """Check whether a profile directory exists."""
     canon = normalize_profile_name(name)
-    if canon == "default":
+    if _is_default_profile_name(canon):
         return True
     return get_profile_dir(canon).is_dir()
 
@@ -380,12 +408,14 @@ def list_profiles() -> List[ProfileInfo]:
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
-    # Default profile
+    # Default/root profile
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
+        default_name = get_default_profile_name()
         model, provider = _read_config_model(default_home)
+        default_alias_path = wrapper_dir / default_name
         profiles.append(ProfileInfo(
-            name="default",
+            name=default_name,
             path=default_home,
             is_default=True,
             gateway_running=_check_gateway_running(default_home),
@@ -393,6 +423,11 @@ def list_profiles() -> List[ProfileInfo]:
             provider=provider,
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
+            alias_path=(
+                default_alias_path
+                if default_name != "default" and default_alias_path.exists()
+                else None
+            ),
         ))
 
     # Named profiles
@@ -402,6 +437,8 @@ def list_profiles() -> List[ProfileInfo]:
             if not entry.is_dir():
                 continue
             name = entry.name
+            if name == get_default_profile_name():
+                continue
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
@@ -574,9 +611,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
 
-    if canon == "default":
+    if _is_default_profile_name(canon):
         raise ValueError(
-            "Cannot delete the default profile (~/.hermes).\n"
+            f"Cannot delete the default profile ({_get_default_hermes_home()}).\n"
             "To remove everything, use: hermes uninstall"
         )
 
@@ -745,26 +782,29 @@ def _stop_gateway_process(profile_dir: Path) -> None:
 def get_active_profile() -> str:
     """Read the sticky active profile name.
 
-    Returns ``"default"`` if no active_profile file exists or it's empty.
+    Returns the root profile's user-facing name when no named profile is
+    selected. That is usually ``default``, but may be a renamed root profile
+    such as ``kinni``.
     """
     path = _get_active_profile_path()
     try:
         name = path.read_text().strip()
-        if not name:
-            return "default"
+        if not name or name == "default":
+            return get_default_profile_name()
         return name
     except (FileNotFoundError, UnicodeDecodeError, OSError):
-        return "default"
+        return get_default_profile_name()
 
 
 def set_active_profile(name: str) -> None:
     """Set the sticky active profile.
 
-    Writes to ``~/.hermes/active_profile``. Use ``"default"`` to clear.
+    Writes to ``~/.hermes/active_profile`` for named profile directories. Root
+    profile names (``default`` or its user-facing alias) clear the file.
     """
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
-    if canon != "default" and not profile_exists(canon):
+    if not _is_default_profile_name(canon) and not profile_exists(canon):
         raise FileNotFoundError(
             f"Profile '{canon}' does not exist. "
             f"Create it with: hermes profile create {canon}"
@@ -772,8 +812,8 @@ def set_active_profile(name: str) -> None:
 
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    if canon == "default":
-        # Remove the file to indicate default
+    if _is_default_profile_name(canon):
+        # Remove the file to indicate the root profile
         path.unlink(missing_ok=True)
     else:
         # Atomic write
@@ -785,9 +825,10 @@ def set_active_profile(name: str) -> None:
 def get_active_profile_name() -> str:
     """Infer the current profile name from HERMES_HOME.
 
-    Returns ``"default"`` if HERMES_HOME is not set or points to ``~/.hermes``.
-    Returns the profile name if HERMES_HOME points into ``~/.hermes/profiles/<name>``.
-    Returns ``"custom"`` if HERMES_HOME is set to an unrecognized path.
+    Returns the root/default profile's user-facing name when HERMES_HOME is not
+    set or points to ``~/.hermes``. Returns the profile name if HERMES_HOME
+    points into ``~/.hermes/profiles/<name>``. Returns ``"custom"`` if
+    HERMES_HOME is set to an unrecognized path.
     """
     from hermes_constants import get_hermes_home
     hermes_home = get_hermes_home()
@@ -795,7 +836,7 @@ def get_active_profile_name() -> str:
 
     default_resolved = _get_default_hermes_home().resolve()
     if resolved == default_resolved:
-        return "default"
+        return get_default_profile_name()
 
     profiles_root = _get_profiles_root().resolve()
     try:
@@ -854,18 +895,20 @@ def export_profile(name: str, output_path: str) -> Path:
     # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
 
-    if canon == "default":
-        # The default profile IS ~/.hermes itself — its parent is ~/ and its
-        # directory name is ".hermes", not "default".  We stage a clean copy
-        # under a temp dir so the archive contains ``default/...``.
+    if _is_default_profile_name(canon):
+        # The root profile IS ~/.hermes itself — its parent is ~/ and its
+        # directory name is ".hermes", not necessarily the user-facing profile
+        # name. Stage a clean copy under the requested/default display name so
+        # the archive contains ``<name>/...``.
+        archive_root_name = canon if canon != "default" else get_default_profile_name()
         with tempfile.TemporaryDirectory() as tmpdir:
-            staged = Path(tmpdir) / "default"
+            staged = Path(tmpdir) / archive_root_name
             shutil.copytree(
                 profile_dir,
                 staged,
                 ignore=_default_export_ignore(profile_dir),
             )
-            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            result = shutil.make_archive(base, "gztar", tmpdir, archive_root_name)
             return Path(result)
 
     # Named profiles — stage a filtered copy to exclude credentials
@@ -1081,6 +1124,10 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
 
+    The root profile (``~/.hermes``) may be renamed by storing a display name
+    in ``default_profile_name``. The legacy ``default`` alias remains valid and
+    no clone is created under ``profiles/<name>``.
+
     Returns the new profile directory.
     """
     old_canon = normalize_profile_name(old_name)
@@ -1088,8 +1135,48 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     validate_profile_name(old_canon)
     validate_profile_name(new_canon)
 
-    if old_canon == "default":
-        raise ValueError("Cannot rename the default profile.")
+    if _is_default_profile_name(old_canon):
+        root_dir = _get_default_hermes_home()
+        if not root_dir.is_dir():
+            raise FileNotFoundError(f"Default profile does not exist at {root_dir}.")
+
+        current_default_name = get_default_profile_name()
+        if new_canon != "default" and (_get_profiles_root() / new_canon).exists():
+            raise FileExistsError(f"Profile '{new_canon}' already exists.")
+
+        aliases_to_remove = {old_canon, current_default_name} - {"default", new_canon}
+        for alias_name in aliases_to_remove:
+            remove_wrapper_script(alias_name)
+
+        name_path = _get_default_profile_name_path()
+        if new_canon == "default":
+            name_path.unlink(missing_ok=True)
+            target_name = "default"
+        else:
+            name_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = name_path.with_suffix(".tmp")
+            tmp.write_text(new_canon + "\n")
+            tmp.replace(name_path)
+            target_name = new_canon
+
+        if target_name != "default":
+            collision = check_alias_collision(target_name)
+            if not collision:
+                create_wrapper_script(target_name)
+                print(f"✓ Alias updated: {target_name}")
+            else:
+                print(f"⚠ Cannot create alias '{target_name}' — {collision}")
+
+        # If the active profile pointed at any root-profile alias, keep the
+        # active profile on the root by clearing the sticky file.
+        active_name = get_active_profile()
+        if active_name in {old_canon, current_default_name, target_name, "default"}:
+            set_active_profile(target_name)
+            print(f"✓ Active profile updated: {target_name}")
+
+        print(f"✓ Renamed root profile {old_canon} → {target_name}")
+        return root_dir
+
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
 

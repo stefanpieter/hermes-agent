@@ -7880,7 +7880,7 @@ def cmd_profile(args):
             model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
             alias = p.name if p.alias_path else "—"
-            if p.is_default:
+            if p.is_default and p.name == "default":
                 alias = "—"
             print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias}")
         print()

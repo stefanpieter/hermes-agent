@@ -135,6 +135,15 @@ class TestGetProfileDir:
         tmp_path = profile_env
         assert get_profile_dir("Coder") == tmp_path / ".hermes" / "profiles" / "coder"
 
+    def test_renamed_default_name_returns_hermes_home(self, profile_env):
+        tmp_path = profile_env
+        rename_profile("default", "kinni")
+
+        result = get_profile_dir("kinni")
+
+        assert result == tmp_path / ".hermes"
+        assert not (tmp_path / ".hermes" / "profiles" / "kinni").exists()
+
 
 # ===================================================================
 # TestCreateProfile
@@ -301,6 +310,16 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_renamed_default_replaces_default_listing(self, profile_env):
+        rename_profile("default", "kinni")
+
+        profiles = list_profiles()
+        names = [p.name for p in profiles]
+
+        assert profiles[0].name == "kinni"
+        assert profiles[0].is_default is True
+        assert "default" not in names
+
 
 # ===================================================================
 # TestActiveProfile
@@ -337,6 +356,24 @@ class TestActiveProfile:
         with pytest.raises(FileNotFoundError):
             set_active_profile("nonexistent")
 
+    def test_renamed_default_is_active_without_clone(self, profile_env):
+        tmp_path = profile_env
+        rename_profile("default", "kinni")
+
+        assert get_active_profile() == "kinni"
+        assert not (tmp_path / ".hermes" / "active_profile").exists()
+
+    def test_setting_renamed_default_keeps_root_profile_active(self, profile_env):
+        tmp_path = profile_env
+        rename_profile("default", "kinni")
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+
+        set_active_profile("kinni")
+
+        assert get_active_profile() == "kinni"
+        assert not (tmp_path / ".hermes" / "active_profile").exists()
+
 
 # ===================================================================
 # TestGetActiveProfileName
@@ -348,6 +385,11 @@ class TestGetActiveProfileName:
     def test_default_hermes_home_returns_default(self, profile_env):
         # HERMES_HOME points to tmp_path/.hermes which is the default
         assert get_active_profile_name() == "default"
+
+    def test_default_hermes_home_returns_renamed_default(self, profile_env):
+        rename_profile("default", "kinni")
+
+        assert get_active_profile_name() == "kinni"
 
     def test_profile_path_returns_profile_name(self, profile_env, monkeypatch):
         tmp_path = profile_env
@@ -384,6 +426,14 @@ class TestResolveProfileEnv:
     def test_default_returns_default_home(self, profile_env):
         tmp_path = profile_env
         result = resolve_profile_env("default")
+        assert result == str(tmp_path / ".hermes")
+
+    def test_renamed_default_returns_default_home(self, profile_env):
+        tmp_path = profile_env
+        rename_profile("default", "kinni")
+
+        result = resolve_profile_env("kinni")
+
         assert result == str(tmp_path / ".hermes")
 
     def test_nonexistent_raises_file_not_found(self, profile_env):
@@ -509,9 +559,41 @@ class TestRenameProfile:
         assert cfg["hosts"]["hermes.ssi_health"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "heimdall"
 
-    def test_default_raises_value_error(self, profile_env):
-        with pytest.raises(ValueError, match="default"):
-            rename_profile("default", "newname")
+    def test_renames_default_without_creating_clone(self, profile_env):
+        tmp_path = profile_env
+
+        renamed_dir = rename_profile("default", "kinni")
+
+        assert renamed_dir == tmp_path / ".hermes"
+        assert get_profile_dir("kinni") == tmp_path / ".hermes"
+        assert not (tmp_path / ".hermes" / "profiles" / "kinni").exists()
+
+    def test_renaming_default_alias_removes_previous_alias_wrapper(self, profile_env):
+        tmp_path = profile_env
+        kinni_alias = tmp_path / ".local" / "bin" / "kinni"
+        luna_alias = tmp_path / ".local" / "bin" / "luna"
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value=None):
+            rename_profile("default", "kinni")
+            assert kinni_alias.exists()
+
+            rename_profile("default", "luna")
+
+        assert not kinni_alias.exists()
+        assert luna_alias.exists()
+        assert get_active_profile() == "luna"
+        assert get_profile_dir("luna") == tmp_path / ".hermes"
+        assert get_profile_dir("kinni") == tmp_path / ".hermes" / "profiles" / "kinni"
+
+    def test_renamed_default_can_be_renamed_back_to_default(self, profile_env):
+        tmp_path = profile_env
+        rename_profile("default", "kinni")
+
+        renamed_dir = rename_profile("kinni", "default")
+
+        assert renamed_dir == tmp_path / ".hermes"
+        assert get_active_profile() == "default"
+        assert get_profile_dir("kinni") == tmp_path / ".hermes" / "profiles" / "kinni"
 
     def test_rename_to_default_raises_value_error(self, profile_env):
         create_profile("coder", no_alias=True)
@@ -527,6 +609,12 @@ class TestRenameProfile:
         create_profile("beta", no_alias=True)
         with pytest.raises(FileExistsError):
             rename_profile("alpha", "beta")
+
+    def test_renaming_default_to_existing_profile_raises_file_exists(self, profile_env):
+        create_profile("kinni", no_alias=True)
+
+        with pytest.raises(FileExistsError):
+            rename_profile("default", "kinni")
 
 
 # ===================================================================
