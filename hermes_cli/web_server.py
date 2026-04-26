@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 from collections import Counter
+from datetime import datetime, timezone
 import hmac
 import importlib.util
 import json
@@ -106,6 +107,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/config/schema",
     "/api/model/info",
     "/api/dashboard/themes",
+    "/api/dashboard/org-chart",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
 })
@@ -608,6 +610,249 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+_CODEX_QUOTA_MAX_AGE_SECONDS = 3600.0
+_CODEX_QUOTA_CACHE_TTL_SECONDS = 60.0
+_CODEX_QUOTA_CACHE_LOCK = threading.Lock()
+_ACTIVE_SESSION_MAX_IDLE_SECONDS = 300.0
+
+
+def _empty_codex_quota_snapshot() -> dict[str, Any]:
+    return {
+        "available": False,
+        "source": "codex_sessions",
+        "fresh_within_seconds": int(_CODEX_QUOTA_MAX_AGE_SECONDS),
+        "latest_observed_at": None,
+        "models": [],
+    }
+
+
+_CODEX_QUOTA_CACHE: dict[str, Any] = {
+    "ts": 0.0,
+    "value": _empty_codex_quota_snapshot(),
+}
+
+
+def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _rate_limit_bucket_snapshot(bucket: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(bucket, dict):
+        return None
+    used_percent = bucket.get("used_percent")
+    if used_percent is None:
+        return None
+    try:
+        used_value = float(used_percent)
+    except (TypeError, ValueError):
+        return None
+    remaining_value = max(0.0, min(100.0, 100.0 - used_value))
+    window_minutes = bucket.get("window_minutes")
+    resets_at = bucket.get("resets_at")
+    return {
+        "used_percent": used_value,
+        "remaining_percent": remaining_value,
+        "window_minutes": int(window_minutes) if isinstance(window_minutes, (int, float)) else None,
+        "resets_at": int(resets_at) if isinstance(resets_at, (int, float)) else None,
+    }
+
+
+def _read_codex_quota_snapshot(codex_home: str | Path | None = None) -> dict[str, Any]:
+    snapshot = _empty_codex_quota_snapshot()
+    codex_root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    sessions_dir = codex_root / "sessions"
+    if not sessions_dir.is_dir():
+        return snapshot
+
+    latest_by_model: dict[str, dict[str, Any]] = {}
+    for session_file in sessions_dir.rglob("*.jsonl"):
+        current_model: Optional[str] = None
+        try:
+            with session_file.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    payload = event.get("payload") or {}
+                    if event.get("type") == "turn_context":
+                        maybe_model = payload.get("model")
+                        if isinstance(maybe_model, str) and maybe_model.strip():
+                            current_model = maybe_model.strip()
+                        continue
+
+                    if payload.get("type") != "token_count":
+                        continue
+                    rate_limits = payload.get("rate_limits") or {}
+                    if not isinstance(rate_limits, dict) or not rate_limits:
+                        continue
+
+                    model = rate_limits.get("model") or payload.get("model") or current_model
+                    if not isinstance(model, str) or not model.strip():
+                        continue
+                    model = model.strip()
+
+                    observed_dt = _parse_iso_timestamp(event.get("timestamp"))
+                    observed_epoch = observed_dt.timestamp() if observed_dt else 0.0
+                    existing = latest_by_model.get(model)
+                    if existing and existing.get("_observed_epoch", 0.0) >= observed_epoch:
+                        continue
+
+                    latest_by_model[model] = {
+                        "model": model,
+                        "plan_type": rate_limits.get("plan_type"),
+                        "limit_id": rate_limits.get("limit_id"),
+                        "limit_name": rate_limits.get("limit_name"),
+                        "observed_at": observed_dt.isoformat() if observed_dt else None,
+                        "primary": _rate_limit_bucket_snapshot(rate_limits.get("primary")),
+                        "secondary": _rate_limit_bucket_snapshot(rate_limits.get("secondary")),
+                        "credits": rate_limits.get("credits") if isinstance(rate_limits.get("credits"), dict) else None,
+                        "_observed_epoch": observed_epoch,
+                    }
+        except OSError:
+            continue
+
+    fresh_cutoff = time.time() - _CODEX_QUOTA_MAX_AGE_SECONDS
+    freshest_observed_epoch = 0.0
+    models: list[dict[str, Any]] = []
+    for entry in latest_by_model.values():
+        observed_epoch = float(entry.pop("_observed_epoch", 0.0) or 0.0)
+        if observed_epoch < fresh_cutoff:
+            continue
+        freshest_observed_epoch = max(freshest_observed_epoch, observed_epoch)
+        models.append(entry)
+
+    def _quota_sort_key(entry: dict[str, Any]) -> tuple[float, str]:
+        primary_remaining = ((entry.get("primary") or {}).get("remaining_percent"))
+        secondary_remaining = ((entry.get("secondary") or {}).get("remaining_percent"))
+        values = [value for value in (primary_remaining, secondary_remaining) if isinstance(value, (int, float))]
+        lowest_remaining = min(values) if values else 100.0
+        return (float(lowest_remaining), str(entry.get("model") or ""))
+
+    models.sort(key=_quota_sort_key)
+    snapshot.update(
+        {
+            "available": bool(models),
+            "fresh_within_seconds": int(_CODEX_QUOTA_MAX_AGE_SECONDS),
+            "latest_observed_at": datetime.fromtimestamp(freshest_observed_epoch, tz=timezone.utc).isoformat()
+            if freshest_observed_epoch
+            else None,
+            "models": models,
+        }
+    )
+    return snapshot
+
+
+def _get_cached_codex_quota_snapshot() -> dict[str, Any]:
+    now = time.time()
+    with _CODEX_QUOTA_CACHE_LOCK:
+        cached = _CODEX_QUOTA_CACHE.get("value") or _empty_codex_quota_snapshot()
+        cache_ts = float(_CODEX_QUOTA_CACHE.get("ts", 0.0) or 0.0)
+        if cached and (now - cache_ts) < _CODEX_QUOTA_CACHE_TTL_SECONDS:
+            return cached
+        value = _read_codex_quota_snapshot()
+        _CODEX_QUOTA_CACHE["ts"] = now
+        _CODEX_QUOTA_CACHE["value"] = value
+        return value
+
+
+def _get_active_model_snapshots(db, *, now: Optional[float] = None, quota_snapshot: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
+    now = float(now or time.time())
+    active_cutoff = now - _ACTIVE_SESSION_MAX_IDLE_SECONDS
+    cursor = db._conn.execute(
+        """
+        SELECT s.id,
+               s.model,
+               s.input_tokens,
+               s.output_tokens,
+               s.cache_read_tokens,
+               s.cache_write_tokens,
+               s.reasoning_tokens,
+               s.billing_provider,
+               COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.started_at) AS last_active
+        FROM sessions s
+        WHERE s.parent_session_id IS NULL
+          AND s.ended_at IS NULL
+          AND s.model IS NOT NULL
+          AND COALESCE((SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id), s.started_at) >= ?
+        ORDER BY last_active DESC
+        """,
+        (active_cutoff,),
+    )
+    quota_by_model = {
+        str(entry.get("model")): entry
+        for entry in (quota_snapshot or {}).get("models", [])
+        if entry.get("model")
+    }
+    by_model: dict[str, dict[str, Any]] = {}
+    for row in cursor.fetchall():
+        item = dict(row)
+        model = str(item.get("model") or "").strip()
+        if not model:
+            continue
+        aggregate = by_model.setdefault(
+            model,
+            {
+                "model": model,
+                "active_sessions": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "total_tokens": 0,
+                "last_active": 0.0,
+                "billing_providers": set(),
+                "codex_quota": quota_by_model.get(model),
+            },
+        )
+        input_tokens = int(item.get("input_tokens") or 0)
+        output_tokens = int(item.get("output_tokens") or 0)
+        cache_read_tokens = int(item.get("cache_read_tokens") or 0)
+        cache_write_tokens = int(item.get("cache_write_tokens") or 0)
+        reasoning_tokens = int(item.get("reasoning_tokens") or 0)
+        last_active = float(item.get("last_active") or 0.0)
+
+        aggregate["active_sessions"] += 1
+        aggregate["input_tokens"] += input_tokens
+        aggregate["output_tokens"] += output_tokens
+        aggregate["cache_read_tokens"] += cache_read_tokens
+        aggregate["cache_write_tokens"] += cache_write_tokens
+        aggregate["reasoning_tokens"] += reasoning_tokens
+        aggregate["total_tokens"] += input_tokens + cache_read_tokens + cache_write_tokens + output_tokens
+        aggregate["last_active"] = max(float(aggregate.get("last_active") or 0.0), last_active)
+        billing_provider = item.get("billing_provider")
+        if billing_provider:
+            aggregate["billing_providers"].add(str(billing_provider))
+
+    results: list[dict[str, Any]] = []
+    for aggregate in by_model.values():
+        aggregate["billing_providers"] = sorted(aggregate.get("billing_providers") or [])
+        results.append(aggregate)
+
+    results.sort(key=lambda entry: (-float(entry.get("last_active") or 0.0), -int(entry.get("total_tokens") or 0), str(entry.get("model") or "")))
+    return results
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -679,6 +924,7 @@ async def get_status():
         gateway_state = "running"
 
     active_sessions = 0
+    codex_quota = _get_cached_codex_quota_snapshot()
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -688,7 +934,7 @@ async def get_status():
             active_sessions = sum(
                 1 for s in sessions
                 if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                and (now - s.get("last_active", s.get("started_at", 0))) < _ACTIVE_SESSION_MAX_IDLE_SECONDS
             )
         finally:
             db.close()
@@ -703,6 +949,7 @@ async def get_status():
         "env_path": str(get_env_path()),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
+        "codex_quota": codex_quota,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
         "gateway_health_url": _GATEWAY_HEALTH_URL,
@@ -1251,7 +1498,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    and (now - s.get("last_active", s.get("started_at", 0))) < _ACTIVE_SESSION_MAX_IDLE_SECONDS
                 )
                 role_runtime_summary = _role_runtime_summary_from_records(
                     runtime_records_by_session.get(str(s.get("id") or ""), [])
@@ -3256,6 +3503,77 @@ async def get_usage_analytics(days: int = 30):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
+
+        cur4 = db._conn.execute("""
+            SELECT source, title, model, input_tokens, output_tokens, started_at
+            FROM sessions
+            WHERE started_at > ? AND source IS NOT NULL
+            ORDER BY started_at DESC
+        """, (cutoff,))
+        source_rows = [dict(r) for r in cur4.fetchall()]
+        by_agent_map: Dict[str, Dict[str, Any]] = {}
+        for row in source_rows:
+            source = row.get("source") or "unknown"
+            entry = by_agent_map.get(source)
+            if entry is None:
+                entry = {
+                    "source": source,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "sessions": 0,
+                    "example_title": row.get("title"),
+                    "latest_model": row.get("model"),
+                    "latest_started_at": row.get("started_at") or 0,
+                }
+                by_agent_map[source] = entry
+            entry["input_tokens"] += row.get("input_tokens") or 0
+            entry["output_tokens"] += row.get("output_tokens") or 0
+            entry["sessions"] += 1
+            if not entry.get("example_title") and row.get("title"):
+                entry["example_title"] = row.get("title")
+            if not entry.get("latest_model") and row.get("model"):
+                entry["latest_model"] = row.get("model")
+
+        by_agent = sorted(
+            ({k: v for k, v in entry.items() if k != "latest_started_at"} for entry in by_agent_map.values()),
+            key=lambda item: (-(item["input_tokens"] + item["output_tokens"]), item["source"]),
+        )
+
+        cur5 = db._conn.execute("""
+            SELECT COUNT(*) as delegate_task_calls,
+                   COUNT(DISTINCT session_id) as sessions_with_delegate_task
+            FROM messages
+            WHERE timestamp > ? AND tool_calls LIKE '%delegate_task%'
+        """, (cutoff,))
+        delegate_metrics = dict(cur5.fetchone())
+
+        cur6 = db._conn.execute("""
+            SELECT model_config
+            FROM sessions
+            WHERE started_at > ? AND parent_session_id IS NOT NULL
+        """, (cutoff,))
+        delegated_role_counts: Dict[str, int] = {}
+        child_sessions = 0
+        for row in cur6.fetchall():
+            child_sessions += 1
+            model_config = row["model_config"]
+            if not model_config:
+                continue
+            try:
+                parsed = json.loads(model_config)
+            except Exception:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            delegated_role = parsed.get("delegated_role")
+            if isinstance(delegated_role, str) and delegated_role.strip():
+                role_name = delegated_role.strip()
+                delegated_role_counts[role_name] = delegated_role_counts.get(role_name, 0) + 1
+        delegate_metrics["child_sessions"] = child_sessions
+        delegate_metrics["delegated_roles"] = delegated_role_counts
+
+        codex_quota = _get_cached_codex_quota_snapshot()
+        active_models = _get_active_model_snapshots(db, quota_snapshot=codex_quota)
         insights_report = InsightsEngine(db).generate(days=days)
         skills = insights_report.get("skills", {
             "summary": {
@@ -3273,6 +3591,9 @@ async def get_usage_analytics(days: int = 30):
         return {
             "daily": daily,
             "by_model": by_model,
+            "by_agent": by_agent,
+            "active_models": active_models,
+            "delegate_metrics": delegate_metrics,
             "totals": totals,
             "period_days": days,
             "skills": skills,
@@ -4055,6 +4376,94 @@ async def set_dashboard_theme(body: ThemeSetBody):
     config["dashboard"]["theme"] = body.name
     save_config(config)
     return {"ok": True, "theme": body.name}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard org chart registry
+# ---------------------------------------------------------------------------
+
+_ORG_CHART_REGISTRY_PATH = PROJECT_ROOT / "web" / "src" / "data" / "hermesOrgChart.registry.yaml"
+_ORG_CHART_GENERATED_PATH = PROJECT_ROOT / "web" / "src" / "data" / "hermesOrgChart.generated.ts"
+
+
+def _load_dashboard_org_chart() -> dict:
+    if not _ORG_CHART_REGISTRY_PATH.exists():
+        raise HTTPException(status_code=404, detail="Org chart registry not found")
+
+    data = yaml.safe_load(_ORG_CHART_REGISTRY_PATH.read_text(encoding="utf-8")) or {}
+    registry_stat = _ORG_CHART_REGISTRY_PATH.stat()
+    generated_exists = _ORG_CHART_GENERATED_PATH.exists()
+    generated_stat = _ORG_CHART_GENERATED_PATH.stat() if generated_exists else None
+
+    role_count = 1 + sum(len(section.get("roles", [])) for section in data.get("org_sections", []))
+
+    return {
+        "registry_path": str(_ORG_CHART_REGISTRY_PATH),
+        "registry_updated_at": int(registry_stat.st_mtime),
+        "generated_path": str(_ORG_CHART_GENERATED_PATH),
+        "generated_updated_at": int(generated_stat.st_mtime) if generated_stat else None,
+        "generated_exists": generated_exists,
+        "role_count": role_count,
+        "section_count": len(data.get("org_sections", [])),
+        "proposed_capability_additions": _get_proposed_capability_additions(),
+        "data": data,
+    }
+
+
+def _get_proposed_capability_additions(limit: int = 20) -> list[dict]:
+    from hermes_state import SessionDB
+
+    proposals: list[dict] = []
+    db = SessionDB()
+    try:
+        rows = db._conn.execute(
+            """
+            SELECT s.id as session_id, s.title as session_title, s.source as source,
+                   s.started_at as started_at, m.content as content
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE m.role = 'tool' AND m.content LIKE '{"error": "Unrecognized delegated role name(s): %'
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            content = row["content"]
+            if not isinstance(content, str):
+                continue
+            marker = "Unrecognized delegated role name(s): "
+            if marker not in content:
+                continue
+            remainder = content.split(marker, 1)[1]
+            proposed = remainder.split(". Use a canonical org-chart role", 1)[0]
+            for part in proposed.split(","):
+                role_name = part.strip()
+                if not role_name:
+                    continue
+                key = (str(row["session_id"]), role_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                proposals.append(
+                    {
+                        "role_name": role_name,
+                        "session_id": row["session_id"],
+                        "session_title": row["session_title"],
+                        "source": row["source"],
+                        "started_at": row["started_at"],
+                    }
+                )
+        return proposals
+    finally:
+        db.close()
+
+
+@app.get("/api/dashboard/org-chart")
+async def get_dashboard_org_chart():
+    """Return the YAML-backed org chart registry plus freshness metadata."""
+    return _load_dashboard_org_chart()
 
 
 # ---------------------------------------------------------------------------

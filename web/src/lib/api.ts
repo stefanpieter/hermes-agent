@@ -318,6 +318,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+
+  // Dashboard org chart
+  getOrgChart: () =>
+    fetchJSON<DashboardOrgChartResponse>("/api/dashboard/org-chart"),
 };
 
 export interface ActionResponse {
@@ -341,10 +345,41 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface CodexQuotaBucket {
+  used_percent: number;
+  remaining_percent: number;
+  window_minutes: number | null;
+  resets_at: number | null;
+}
+
+export interface CodexQuotaModel {
+  model: string;
+  plan_type: string | null;
+  limit_id?: string | null;
+  limit_name?: string | null;
+  observed_at?: string | null;
+  primary: CodexQuotaBucket | null;
+  secondary: CodexQuotaBucket | null;
+  credits?: {
+    has_credits?: boolean;
+    unlimited?: boolean;
+    balance?: number | null;
+  } | null;
+}
+
+export interface CodexQuotaSnapshot {
+  available: boolean;
+  source: string;
+  models: CodexQuotaModel[];
+  fresh_within_seconds?: number;
+  latest_observed_at?: string | null;
+}
+
 export interface StatusResponse {
   active_sessions: number;
   config_path: string;
   config_version: number;
+  codex_quota: CodexQuotaSnapshot;
   env_path: string;
   gateway_exit_reason: string | null;
   gateway_health_url: string | null;
@@ -374,6 +409,14 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   role_runtime_summary?: RoleRuntimeSummary | null;
+  role_gate?: {
+    requested_roles: string[];
+    delegated_roles: Record<string, number>;
+    missing_roles: string[];
+    status: "pass" | "pending" | "observed_only";
+    inference_source?: "explicit" | "lead_default" | "observed_only" | null;
+    missing_role_proposals?: string[];
+  };
 }
 
 export interface RoleRuntimeFindingSummary {
@@ -532,6 +575,29 @@ export interface AnalyticsModelEntry {
   api_calls: number;
 }
 
+export interface AnalyticsActiveModelEntry {
+  model: string;
+  active_sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  last_active: number;
+  billing_providers: string[];
+  codex_quota: CodexQuotaModel | null;
+}
+
+export interface AnalyticsAgentEntry {
+  source: string;
+  input_tokens: number;
+  output_tokens: number;
+  sessions: number;
+  example_title: string | null;
+  latest_model: string | null;
+}
+
 export interface AnalyticsSkillEntry {
   skill: string;
   view_count: number;
@@ -551,6 +617,14 @@ export interface AnalyticsSkillsSummary {
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
+  by_agent: AnalyticsAgentEntry[];
+  active_models: AnalyticsActiveModelEntry[];
+  delegate_metrics?: {
+    delegate_task_calls: number;
+    sessions_with_delegate_task: number;
+    child_sessions?: number;
+    delegated_roles?: Record<string, number>;
+  };
   totals: {
     total_input: number;
     total_output: number;
@@ -807,6 +881,75 @@ export interface DashboardThemeSummary {
 export interface DashboardThemesResponse {
   active: string;
   themes: DashboardThemeSummary[];
+}
+
+export interface DashboardOrgChartRegistryRole {
+  title: string;
+  position: string;
+  mission: string;
+  responsibilities: string[];
+  activation: string;
+  reportsTo: string;
+  model: string;
+  toolFocus: string[];
+  invokeFor: string[];
+  skills?: {
+    required: string[];
+    recommended?: string[];
+    triggered?: Array<{ skill: string; when: string }>;
+  };
+  icon: string;
+  tone?: "default" | "success" | "warning";
+  runtimePolicy?: {
+    default_execution_mode: string;
+    allowed_execution_modes: string[];
+    requires_independent_session: boolean;
+    requires_artifact_handoff: boolean;
+    lead_coordinates_feedback: boolean;
+    lead_review_required_before_next_handoff: boolean;
+    requires_revalidation_after_fix: boolean;
+    worktree_strategy: string;
+  };
+}
+
+export interface DashboardOrgChartRegistrySection {
+  id: string;
+  title: string;
+  description: string;
+  lane: string;
+  roles: DashboardOrgChartRegistryRole[];
+}
+
+export interface DashboardOrgChartRegistryData {
+  lead_role: DashboardOrgChartRegistryRole;
+  role_aliases?: Record<string, string[]>;
+  org_sections: DashboardOrgChartRegistrySection[];
+  workflow_steps: string[];
+  verification_levels: Array<{ id: string; label: string; detail: string }>;
+  invoke_matrix: Array<{
+    trigger: string;
+    primary: string;
+    supporting: string[];
+    verification: string;
+  }>;
+}
+
+export interface DashboardOrgChartResponse {
+  registry_path: string;
+  registry_updated_at: number;
+  generated_path: string;
+  generated_updated_at: number | null;
+  generated_exists: boolean;
+  role_count: number;
+  section_count: number;
+  proposed_capability_additions: Array<{
+    role_name: string;
+    session_id: string;
+    session_title: string | null;
+    source: string | null;
+    started_at: number;
+  }>;
+  data: DashboardOrgChartRegistryData;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────
