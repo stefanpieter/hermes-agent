@@ -207,7 +207,7 @@ def write_generated_module(
 
 
 def main() -> int:
-    write_generated_module()
+    write_generated_module(output_path=OUTPUT_PATH)
     return 0
 
 
