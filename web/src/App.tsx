@@ -59,6 +59,7 @@ import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
+import StatusPage from "@/pages/StatusPage";
 import SessionsPage from "@/pages/SessionsPage";
 import OrgChartPage from "@/pages/OrgChartPage";
 import LogsPage from "@/pages/LogsPage";
@@ -78,16 +79,12 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
-function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
-}
-
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
     return null;
   }
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/" replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -107,7 +104,7 @@ const CHAT_NAV_ITEM: NavItem = {
  * and nav highlight keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
+  "/": StatusPage,
   "/sessions": SessionsPage,
   "/org-chart": OrgChartPage,
   "/analytics": AnalyticsPage,
@@ -131,6 +128,7 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  { path: "/", labelKey: "status", label: "Status", icon: Activity },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -656,7 +654,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
     <li>
       <NavLink
         to={path}
-        end={path === "/sessions"}
+        end={path === "/"}
         onClick={closeMobile}
         className={({ isActive }) =>
           cn(
@@ -722,7 +720,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
     void runAction(action);
-    navigate("/sessions");
+    navigate("/");
     onNavigate();
   };
 

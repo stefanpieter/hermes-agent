@@ -75,10 +75,12 @@ export interface Translations {
       keys: string;
       logs: string;
       models: string;
+      orgChart: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      status: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
