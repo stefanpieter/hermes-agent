@@ -234,6 +234,29 @@ class TestWebServerEndpoints:
 
         assert "tool_output" in data["category_order"]
 
+    def test_get_config_schema_exposes_auto_continue_controls(self):
+        """Dashboard config should expose bounded max-iteration auto-continue settings."""
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        data = resp.json()
+        schema = data["fields"]
+
+        enabled = schema["agent.auto_continue_on_max_iterations.enabled"]
+        assert enabled["type"] == "boolean"
+        assert enabled["category"] == "agent"
+        assert "maximum" in enabled["description"].lower()
+
+        max_auto_continues = schema["agent.auto_continue_on_max_iterations.max_auto_continues"]
+        assert max_auto_continues["type"] == "number"
+        assert max_auto_continues["category"] == "agent"
+        assert max_auto_continues["min"] == 0
+        assert max_auto_continues["max"] <= 10
+
+        prompt = schema["agent.auto_continue_on_max_iterations.prompt"]
+        assert prompt["type"] == "text"
+        assert prompt["category"] == "agent"
+        assert "destructive" in prompt["description"].lower()
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
@@ -258,6 +281,20 @@ class TestWebServerEndpoints:
             "turn_budget_chars": 200_000,
             "preview_chars": 1_500,
         }
+
+    def test_get_config_defaults_include_conservative_auto_continue_defaults(self):
+        """Auto-continue defaults should be present, bounded, and disabled by default."""
+        resp = self.client.get("/api/config/defaults")
+        assert resp.status_code == 200
+        defaults = resp.json()
+
+        auto_continue = defaults["agent"]["auto_continue_on_max_iterations"]
+        assert auto_continue["enabled"] is False
+        assert auto_continue["max_auto_continues"] == 3
+        assert "Continue autonomously" in auto_continue["prompt"]
+        assert "destructive" in auto_continue["prompt"].lower()
+
+        assert DEFAULT_CONFIG["agent"]["auto_continue_on_max_iterations"] == auto_continue
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")

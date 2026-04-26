@@ -494,6 +494,16 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Bounded autonomous continuation when the per-turn max tool-calling
+        # iteration cap is reached. Disabled by default to avoid runaway cost.
+        "auto_continue_on_max_iterations": {
+            "enabled": False,
+            "max_auto_continues": 3,
+            "prompt": (
+                "Continue autonomously from the current state. Do not repeat completed work. "
+                "Stop and summarize if blocked, if approval is required, or before destructive/externally visible actions."
+            ),
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

@@ -396,6 +396,23 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "agent.auto_continue_on_max_iterations.enabled": {
+        "type": "boolean",
+        "description": "Automatically continue when the maximum tool-calling iterations are reached (default off)",
+        "category": "agent",
+    },
+    "agent.auto_continue_on_max_iterations.max_auto_continues": {
+        "type": "number",
+        "description": "Maximum number of bounded auto-continue cycles allowed after hitting agent.max_turns",
+        "category": "agent",
+        "min": 0,
+        "max": 10,
+    },
+    "agent.auto_continue_on_max_iterations.prompt": {
+        "type": "text",
+        "description": "Prompt injected for each auto-continue; should stop before destructive or externally visible actions",
+        "category": "agent",
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",

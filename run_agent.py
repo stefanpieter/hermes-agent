@@ -953,6 +953,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        auto_continue_on_max_iterations: Dict[str, Any] = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -1839,6 +1840,34 @@ class AIAgent:
         except (TypeError, ValueError):
             _api_retries = 3
         self._api_max_retries = _api_retries
+
+        _auto_continue_cfg = auto_continue_on_max_iterations
+        if _auto_continue_cfg is None:
+            _auto_continue_cfg = _agent_section.get("auto_continue_on_max_iterations", {})
+        if not isinstance(_auto_continue_cfg, dict):
+            _auto_continue_cfg = {}
+
+        _auto_enabled_raw = _auto_continue_cfg.get("enabled", False)
+        if isinstance(_auto_enabled_raw, str):
+            _auto_enabled = _auto_enabled_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            _auto_enabled = bool(_auto_enabled_raw)
+        try:
+            _auto_max = int(_auto_continue_cfg.get("max_auto_continues", 0))
+        except (TypeError, ValueError):
+            _auto_max = 0
+        _auto_max = max(0, min(10, _auto_max))
+        _auto_prompt = str(_auto_continue_cfg.get("prompt") or "").strip()
+        if not _auto_prompt:
+            _auto_prompt = (
+                "Continue autonomously from the current state. Do not repeat completed work. "
+                "Stop and summarize if blocked, if approval is required, or before destructive/externally visible actions."
+            )
+        self._auto_continue_on_max_iterations_enabled = _auto_enabled
+        self._auto_continue_on_max_iterations_max = _auto_max
+        self._auto_continue_on_max_iterations_prompt = _auto_prompt
+        self._auto_continue_on_max_iterations_used = 0
+        self._auto_continue_on_max_iterations_chunk = max(1, int(self.max_iterations or 1))
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -10514,6 +10543,60 @@ class AIAgent:
 
 
 
+    def _prepare_auto_continue_on_max_iterations(self, messages: list, api_call_count: int) -> bool:
+        """Extend the max-iteration window once a bounded auto-continue is allowed."""
+        if not getattr(self, "_auto_continue_on_max_iterations_enabled", False):
+            return False
+        if api_call_count < self.max_iterations:
+            return False
+
+        max_auto_continues = max(0, int(getattr(self, "_auto_continue_on_max_iterations_max", 0) or 0))
+        used_auto_continues = max(0, int(getattr(self, "_auto_continue_on_max_iterations_used", 0) or 0))
+        if used_auto_continues >= max_auto_continues:
+            return False
+
+        # If a separate/shared iteration budget exhausted before the configured
+        # max-iteration cap, stop safely instead of treating it as proceedable
+        # max-turn exhaustion. The default budget reaches the cap at the same
+        # time as api_call_count, which is eligible and extended below.
+        if self.iteration_budget is not None and self.iteration_budget.remaining <= 0:
+            if self.iteration_budget.used < self.max_iterations:
+                return False
+
+        prompt = str(getattr(self, "_auto_continue_on_max_iterations_prompt", "") or "").strip()
+        if not prompt:
+            return False
+
+        previous_max_iterations = self.max_iterations
+        try:
+            chunk = int(getattr(self, "_auto_continue_on_max_iterations_chunk", previous_max_iterations) or previous_max_iterations)
+        except (TypeError, ValueError):
+            chunk = previous_max_iterations
+        chunk = max(1, chunk)
+
+        self._auto_continue_on_max_iterations_used = used_auto_continues + 1
+        self.max_iterations = previous_max_iterations + chunk
+        if self.iteration_budget is not None and self.iteration_budget.remaining <= 0:
+            self.iteration_budget.max_total += chunk
+
+        continue_msg = {"role": "user", "content": prompt}
+        messages.append(continue_msg)
+        self._session_messages = messages
+        try:
+            self._save_session_log(messages)
+        except Exception:
+            pass
+
+        status = (
+            "↻ Auto-continuing after max tool-call iterations "
+            f"({self._auto_continue_on_max_iterations_used}/{max_auto_continues}); "
+            f"extended turn limit to {self.max_iterations}."
+        )
+        self._emit_status(status)
+        if not self.quiet_mode:
+            self._safe_print(f"\n{status}")
+        return True
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -10819,7 +10902,10 @@ class AIAgent:
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
+        _configured_max_iterations = self.max_iterations
         self.iteration_budget = IterationBudget(self.max_iterations)
+        self._auto_continue_on_max_iterations_used = 0
+        self._auto_continue_on_max_iterations_chunk = max(1, int(self.max_iterations or 1))
 
         # Log conversation turn start for debugging/observability
         _preview_text = _summarize_user_message_for_log(user_message)
@@ -11092,7 +11178,11 @@ class AIAgent:
             except Exception:
                 pass
 
-        while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
+        while (
+            (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0)
+            or self._budget_grace_call
+            or self._prepare_auto_continue_on_max_iterations(messages, api_call_count)
+        ):
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
@@ -14114,8 +14204,14 @@ class AIAgent:
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
         
-        # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        # Determine if conversation completed successfully. A real text response on
+        # the final allowed call is complete; a synthetic max-iteration summary is
+        # still incomplete so frontends can show that work stopped at the cap.
+        completed = final_response is not None and (
+            api_call_count < self.max_iterations
+            or str(_turn_exit_reason).startswith("text_response")
+            or _turn_exit_reason == "empty_response_exhausted"
+        )
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
@@ -14304,6 +14400,7 @@ class AIAgent:
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
 
+        self.max_iterations = _configured_max_iterations
         return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

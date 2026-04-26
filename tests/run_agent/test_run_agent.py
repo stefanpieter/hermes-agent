@@ -219,6 +219,31 @@ def test_aiagent_reuses_existing_errors_log_handler():
 
 
 class TestProviderModelNormalization:
+    def test_aiagent_accepts_auto_continue_config_kwarg(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="x",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                auto_continue_on_max_iterations={
+                    "enabled": "true",
+                    "max_auto_continues": "12",
+                    "prompt": "Keep going safely.",
+                },
+            )
+
+        assert agent._auto_continue_on_max_iterations_enabled is True
+        assert agent._auto_continue_on_max_iterations_max == 10
+        assert agent._auto_continue_on_max_iterations_prompt == "Keep going safely."
+
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (
             patch(
@@ -2449,6 +2474,77 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_auto_continue_on_max_iterations_continues_with_safe_prompt(self, agent):
+        """Enabled auto-continue should add a safe prompt and continue instead of summarizing."""
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent._auto_continue_on_max_iterations_enabled = True
+        agent._auto_continue_on_max_iterations_max = 1
+        agent._auto_continue_on_max_iterations_prompt = (
+            "Continue autonomously from the current state. Do not repeat completed work. "
+            "Stop and summarize if blocked, if approval is required, or before destructive actions."
+        )
+        agent._auto_continue_on_max_iterations_used = 0
+        agent._auto_continue_on_max_iterations_chunk = 1
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Finished after continuing", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_handle_max_iterations", wraps=agent._handle_max_iterations) as mock_summary,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Finished after continuing"
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert agent._auto_continue_on_max_iterations_used == 1
+        mock_summary.assert_not_called()
+        user_prompts = [m["content"] for m in result["messages"] if m.get("role") == "user"]
+        assert any("Continue autonomously" in prompt for prompt in user_prompts)
+        assert any("destructive" in prompt.lower() for prompt in user_prompts)
+
+    def test_auto_continue_on_max_iterations_respects_max_auto_continues(self, agent):
+        """Auto-continue must stop at the configured bound and then request a summary."""
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent._auto_continue_on_max_iterations_enabled = True
+        agent._auto_continue_on_max_iterations_max = 1
+        agent._auto_continue_on_max_iterations_prompt = "Continue autonomously from the current state."
+        agent._auto_continue_on_max_iterations_used = 0
+        agent._auto_continue_on_max_iterations_chunk = 1
+
+        tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc1])
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc2])
+        summary_resp = _mock_response(content="Summary after bounded stop", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, summary_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_handle_max_iterations", wraps=agent._handle_max_iterations) as mock_summary,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Summary after bounded stop"
+        assert result["completed"] is False
+        assert result["api_calls"] == 2
+        assert agent._auto_continue_on_max_iterations_used == 1
+        mock_summary.assert_called_once()
+        user_prompts = [m["content"] for m in result["messages"] if m.get("role") == "user"]
+        assert sum("Continue autonomously" in prompt for prompt in user_prompts) == 1
+        assert any("maximum number of tool-calling iterations" in prompt for prompt in user_prompts)
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
