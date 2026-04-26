@@ -1,11 +1,34 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Database, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { CodexQuotaModel, StatusResponse } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api";
 import { timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageBand } from "@/components/layout/page-band";
+
+
+interface CodexQuotaBucket {
+  remaining_percent?: number | null;
+  resets_at?: number | null;
+  used_percent?: number | null;
+}
+
+interface CodexQuotaModel {
+  model: string;
+  observed_at?: string | null;
+  plan_type?: string | null;
+  primary?: CodexQuotaBucket | null;
+  secondary?: CodexQuotaBucket | null;
+}
+
+interface CodexQuotaStatus {
+  fresh_within_seconds?: number | null;
+  latest_observed_at?: string | null;
+  models?: CodexQuotaModel[];
+}
+
+type StatusWithQuota = StatusResponse & { codex_quota?: CodexQuotaStatus | null };
 
 function formatResetTime(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "Reset unknown";
@@ -61,14 +84,14 @@ function QuotaMeter({ label, bucket }: { label: string; bucket: CodexQuotaModel[
 }
 
 export default function QuotaPage() {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [status, setStatus] = useState<StatusWithQuota | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
       const next = await api.getStatus();
-      setStatus(next);
+      setStatus(next as StatusWithQuota);
     } finally {
       setRefreshing(false);
     }
@@ -109,8 +132,8 @@ export default function QuotaPage() {
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   Observed from local Codex session telemetry. Primary = 5h window, Secondary = weekly window.
-                  {status.codex_quota.latest_observed_at ? ` Latest observed ${isoTimeAgo(status.codex_quota.latest_observed_at)}.` : ""}
-                  {status.codex_quota.fresh_within_seconds ? ` Freshness requirement: within ${Math.round(status.codex_quota.fresh_within_seconds / 3600)} hour.` : ""}
+                  {status.codex_quota?.latest_observed_at ? ` Latest observed ${isoTimeAgo(status.codex_quota.latest_observed_at)}.` : ""}
+                  {status.codex_quota?.fresh_within_seconds ? ` Freshness requirement: within ${Math.round(status.codex_quota.fresh_within_seconds / 3600)} hour.` : ""}
                 </p>
               </div>
               <button
