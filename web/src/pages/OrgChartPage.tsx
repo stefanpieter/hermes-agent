@@ -26,7 +26,7 @@ import type {
   DashboardOrgChartRegistrySection,
   DashboardOrgChartResponse,
 } from "@/lib/api";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DEFAULT_OPEN_SECTIONS as GENERATED_DEFAULT_OPEN_SECTIONS,
@@ -132,7 +132,7 @@ function RoleCard({ role }: { role: OrgRole }) {
           </div>
           <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{role.position}</p>
         </div>
-        <Badge variant={toneVariant(role.tone)}>{role.model}</Badge>
+        <Badge tone={toneVariant(role.tone)}>{role.model}</Badge>
       </div>
 
       <p className="mb-3 text-sm leading-relaxed text-muted-foreground">{role.mission}</p>
@@ -169,7 +169,7 @@ function RoleCard({ role }: { role: OrgRole }) {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {role.toolFocus.map((item) => (
-              <Badge key={item} variant="secondary" className="text-[10px]">
+              <Badge key={item} tone="secondary" className="text-[10px]">
                 {item}
               </Badge>
             ))}
@@ -182,7 +182,7 @@ function RoleCard({ role }: { role: OrgRole }) {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {role.invokeFor.map((item) => (
-              <Badge key={item} variant="secondary" className="text-[10px]">
+              <Badge key={item} tone="secondary" className="text-[10px]">
                 {item}
               </Badge>
             ))}
@@ -215,8 +215,8 @@ function SectionBlock({
             <CardDescription>{section.description}</CardDescription>
           </div>
           <div className="flex items-center gap-2 self-start lg:self-auto">
-            <Badge variant="secondary">{section.lane}</Badge>
-            <Badge variant="secondary">{section.roles.length} roles</Badge>
+            <Badge tone="secondary">{section.lane}</Badge>
+            <Badge tone="secondary">{section.roles.length} roles</Badge>
             {open ? <ChevronUp className="h-4 w-4 text-primary" /> : <ChevronDown className="h-4 w-4 text-primary" />}
           </div>
         </button>
@@ -323,10 +323,10 @@ export default function OrgChartPage() {
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge variant="success">Lead-directed</Badge>
-              <Badge variant="secondary">GPT-5.4 roles</Badge>
-              <Badge variant="warning">Verification gated</Badge>
-              <Badge variant="outline">Live auto-refresh · 5s</Badge>
+              <Badge tone="success">Lead-directed</Badge>
+              <Badge tone="secondary">GPT-5.4 roles</Badge>
+              <Badge tone="warning">Verification gated</Badge>
+              <Badge tone="outline">Live auto-refresh · 5s</Badge>
             </div>
           </div>
         </CardHeader>
@@ -410,8 +410,8 @@ export default function OrgChartPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge variant="success">Reports to user</Badge>
-              <Badge variant="secondary">{leadRole.model}</Badge>
+              <Badge tone="success">Reports to user</Badge>
+              <Badge tone="secondary">{leadRole.model}</Badge>
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -431,7 +431,7 @@ export default function OrgChartPage() {
                 <div className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-foreground/80">Lead lane</div>
                 <div className="flex flex-wrap gap-1.5">
                   {leadRole.toolFocus.map((item) => (
-                    <Badge key={item} variant="secondary" className="text-[10px]">
+                    <Badge key={item} tone="secondary" className="text-[10px]">
                       {item}
                     </Badge>
                   ))}
@@ -441,7 +441,7 @@ export default function OrgChartPage() {
                 <div className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-foreground/80">Invoke for</div>
                 <div className="flex flex-wrap gap-1.5">
                   {leadRole.invokeFor.map((item) => (
-                    <Badge key={item} variant="secondary" className="text-[10px]">
+                    <Badge key={item} tone="secondary" className="text-[10px]">
                       {item}
                     </Badge>
                   ))}

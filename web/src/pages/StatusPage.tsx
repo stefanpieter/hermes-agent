@@ -24,8 +24,8 @@ import type {
 } from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
 import { Toast } from "@/components/Toast";
 import { PageBand } from "@/components/layout/page-band";
 import { useI18n } from "@/i18n";
@@ -249,7 +249,7 @@ export default function StatusPage() {
               <div className="truncate font-display text-2xl font-bold" title={value}>{value}</div>
 
               {badgeText && (
-                <Badge variant={badgeVariant} className="mt-2">
+                <Badge tone={badgeVariant} className="mt-2">
                   {badgeVariant === "success" && (
                     <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                   )}
@@ -269,7 +269,7 @@ export default function StatusPage() {
           <CardContent>
             <div className="flex gap-4">
               <Button
-                variant="outline"
+                outlined
                 size="sm"
                 onClick={() => runAction("restart")}
                 disabled={
@@ -293,7 +293,7 @@ export default function StatusPage() {
               </Button>
 
               <Button
-                variant="outline"
+                outlined
                 size="sm"
                 onClick={() => runAction("update")}
                 disabled={
@@ -342,7 +342,7 @@ export default function StatusPage() {
               </span>
 
               <Badge
-                variant={
+                tone={
                   actionStatus?.running
                     ? "warning"
                     : actionStatus?.exit_code === 0
@@ -410,7 +410,7 @@ export default function StatusPage() {
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{s.title ?? t.common.untitled}</span>
 
-                      <Badge variant="success" className="shrink-0 text-[10px]">
+                      <Badge tone="success" className="shrink-0 text-[10px]">
                         <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                         {t.common.live}
                       </Badge>
@@ -457,7 +457,7 @@ export default function StatusPage() {
                     )}
                   </div>
 
-                  <Badge variant="outline" className="self-start shrink-0 text-[10px] sm:self-center">
+                  <Badge tone="outline" className="self-start shrink-0 text-[10px] sm:self-center">
                     <Database className="mr-1 h-3 w-3" />
                     {s.source ?? "local"}
                   </Badge>
@@ -520,7 +520,7 @@ function PlatformsCard({ platforms, platformStateBadge }: PlatformsCardProps) {
                 </div>
               </div>
 
-              <Badge variant={display.variant} className="shrink-0 self-start sm:self-center">
+              <Badge tone={display.variant} className="shrink-0 self-start sm:self-center">
                 {display.variant === "success" && (
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}

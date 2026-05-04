@@ -351,18 +351,18 @@ function SessionRow({
             {session.role_runtime_summary && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <Badge
-                  variant={session.role_runtime_summary.is_override ? "warning" : "success"}
+                  tone={session.role_runtime_summary.is_override ? "warning" : "success"}
                   className="text-[10px]"
                 >
                   {session.role_runtime_summary.canonical_role ?? "Role runtime"}
                 </Badge>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge tone="outline" className="text-[10px]">
                   Mode: {session.role_runtime_summary.execution_mode ?? t.common.unknown}
                 </Badge>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge tone="outline" className="text-[10px]">
                   Plan: {session.role_runtime_summary.plan_id ?? "—"}
                 </Badge>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge tone="outline" className="text-[10px]">
                   Open findings: {session.role_runtime_summary.open_findings_count}
                 </Badge>
               </div>

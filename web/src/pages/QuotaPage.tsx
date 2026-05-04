@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 import { timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { PageBand } from "@/components/layout/page-band";
 
 
@@ -54,7 +54,7 @@ function QuotaMeter({ label, bucket }: { label: string; bucket: CodexQuotaModel[
       <div className="grid gap-1">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium text-muted-foreground">{label}</span>
-          <Badge variant="outline" className="text-[10px]">Unknown</Badge>
+          <Badge tone="outline" className="text-[10px]">Unknown</Badge>
         </div>
       </div>
     );
@@ -67,7 +67,7 @@ function QuotaMeter({ label, bucket }: { label: string; bucket: CodexQuotaModel[
     <div className="grid gap-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        <Badge variant={variant} className="text-[10px]">{remaining.toFixed(0)}% remaining</Badge>
+        <Badge tone={variant} className="text-[10px]">{remaining.toFixed(0)}% remaining</Badge>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-muted/60">
         <div
@@ -158,7 +158,7 @@ export default function QuotaPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono-ui text-sm font-medium">{entry.model}</span>
                     {entry.plan_type && (
-                      <Badge variant="secondary" className="text-[10px] uppercase tracking-[0.12em]">
+                      <Badge tone="secondary" className="text-[10px] uppercase tracking-[0.12em]">
                         {entry.plan_type}
                       </Badge>
                     )}
