@@ -842,6 +842,20 @@ class TestGitDestructiveOps:
         assert dangerous is True
         assert "force" in desc.lower()
 
+    def test_git_push_force_with_lease_has_separate_approval_key(self):
+        cmd = "git push --force-with-lease origin feature-branch"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert key == "git force-with-lease push (guarded remote history update)"
+        assert desc == key
+
+    def test_git_push_force_with_lease_equals_has_separate_approval_key(self):
+        cmd = "git push --force-with-lease=refs/heads/main origin feature-branch"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert key == "git force-with-lease push (guarded remote history update)"
+        assert desc == key
+
     def test_git_push_dash_f_detected(self):
         cmd = "git push -f origin main"
         dangerous, _, desc = detect_dangerous_command(cmd)
