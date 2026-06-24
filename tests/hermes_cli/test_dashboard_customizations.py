@@ -4,116 +4,126 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-DASHBOARD_CUSTOMIZATION_MARKERS = {
-    ".hermes/plans/2026-04-22_164051-role-team-hybrid-runtime.md": [
-        "Hermes role-team runtime overhaul",
-        "persistent_role_instance",
-        "role skill-policy",
-    ],
-    "tests/hermes_cli/test_dashboard_customizations.py": [
-        "DASHBOARD_CUSTOMIZATION_MARKERS",
-        "Kinni dashboard customization guard",
-    ],
-    "web/public/kinni-logo.svg": ["id=\"kinni\""],
-    "web/src/App.tsx": [
+def _read(relative_path: str) -> str:
+    return (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_dashboard_shell_tracks_upstream_sidebar_layout() -> None:
+    """The local dashboard should look like upstream; Org Chart is supplied by a plugin tab."""
+    app = _read("web/src/App.tsx")
+
+    upstream_shell_markers = [
+        "SelectionSwitcher",
+        "PageHeaderProvider",
+        "ProfileSwitcher",
+        "SidebarFooter",
+        "SidebarStatusStrip",
+        "SidebarSystemActions",
+        'data-layout-variant={layoutVariant}',
+        '<PluginSlot name="header-left" />',
+        "PluginPage",
+    ]
+    missing = [marker for marker in upstream_shell_markers if marker not in app]
+
+    assert not missing, "Upstream dashboard shell marker(s) missing:\n" + "\n".join(missing)
+
+
+def test_org_chart_is_not_hardcoded_into_builtin_dashboard_nav() -> None:
+    """Avoid duplicate Org Chart entries when the external dashboard plugin is installed."""
+    app = _read("web/src/App.tsx")
+
+    forbidden_markers = [
         "KinniDashboardShell",
-        "StatusPage",
-        '<Route path="/" element={<StatusPage />} />',
-        "OrgChartPage",
-    ],
-    "web/src/components/layout/kinni-dashboard-shell.tsx": [
+        "kinni-dashboard-shell",
         "kinni-logo.svg",
-        'label: "Status"',
-        'end={path === "/"}',
-        'className="fixed top-0 left-0 right-0 z-40',
-        'max-w-[1400px]',
-        "noise-overlay",
-        "warm-glow",
-        "org-chart",
-    ],
-    "web/src/pages/StatusPage.tsx": ["StatusPage", "PageBand", "restartGateway", "updateHermes"],
-    "web/src/pages/AnalyticsPage.tsx": [
-        "ActiveModelsSection",
-        "RoleExecutionEvidence",
-        "AgentAnalyticsTable",
-        "api.getOrgChart()",
-        "data.active_models",
-        "data.delegate_metrics",
-        "data?.by_agent",
-    ],
-    "web/src/pages/OrgChartPage.tsx": [
-        "Hermes agent org chart",
-        "Live auto-refresh · 5s",
-        "Registry status",
-        "Reports upward into Lead / PM",
-        "Approved role aliases & proposed capability additions",
-        "api.getOrgChart()",
-    ],
-    "web/src/lib/api.ts": [
-        "getOrgChart",
-        "DashboardOrgChartResponse",
-        "AnalyticsActiveModelEntry",
-        "AnalyticsAgentEntry",
-        "delegate_metrics",
-    ],
-    "hermes_cli/web_server.py": [
-        '@app.get("/api/dashboard/org-chart")',
-        "_load_dashboard_org_chart",
-        "by_agent",
-        "active_models",
-        "delegate_metrics",
-        "codex_quota",
-    ],
-    "web/src/lib/resolve-page-title.ts": ['return t.app.nav.status'],
-    "web/src/components/layout/page-band.tsx": ["PageBand", "page-band--bleed"],
-    "web/src/index.css": ["Kinni", "page-band--bleed", ".noise-overlay", "#212121", "#FA4E4A"],
-    "web/src/themes/presets.ts": ["Kinni Dark", "Kinni/Hermes"],
-    "web/src/pages/QuotaPage.tsx": ["QuotaPage", "PageBand"],
-    "web/src/data/hermesOrgChart.registry.yaml": ["persistent_role_instance", "skills:", "Lead / PM"],
-    "web/src/data/hermesOrgChart.generated.ts": ["OrgRole", "persistent_role_instance", "Lead / PM"],
-}
+        "OrgChartPage",
+        '"/org-chart"',
+        "Org Chart",
+    ]
+    present = [marker for marker in forbidden_markers if marker in app]
+
+    assert not present, "Dashboard App.tsx still hardcodes local chrome/org-chart route:\n" + "\n".join(present)
 
 
-def test_kinni_dashboard_customizations_are_present() -> None:
-    """Guard the local dashboard overlay from being lost during Hermes updates/rebases."""
+def test_legacy_tracked_kinni_shell_assets_are_removed() -> None:
+    """Kinni chrome should live in the external plugin/theme overlay, not the tracked dashboard shell."""
+    removed_paths = [
+        "web/public/kinni-logo.svg",
+        "web/src/components/layout/kinni-dashboard-shell.tsx",
+    ]
+    present = [path for path in removed_paths if (PROJECT_ROOT / path).exists()]
+
+    assert not present, "Legacy tracked Kinni dashboard shell asset(s) still present:\n" + "\n".join(present)
+
+
+def test_builtin_default_theme_is_upstream_hermes_teal() -> None:
+    """The built-in default theme should not be renamed/repainted as Kinni Dark."""
+    frontend_presets = _read("web/src/themes/presets.ts")
+    backend_server = _read("hermes_cli/web_server.py")
+
+    required = [
+        'label: "Hermes Teal"',
+        "Classic dark teal — the canonical Hermes look",
+        '{"name": "default",       "label": "Hermes Teal"',
+    ]
+    missing = [marker for marker in required if marker not in frontend_presets + backend_server]
+    forbidden = [
+        'label: "Kinni Dark"',
+        "Shared Kinni/Hermes dark brand palette",
+        'logo: "/kinni-logo.svg"',
+    ]
+    present = [marker for marker in forbidden if marker in frontend_presets or marker in backend_server]
+
+    assert not missing, "Default Hermes Teal theme marker(s) missing:\n" + "\n".join(missing)
+    assert not present, "Built-in default theme still contains Kinni branding:\n" + "\n".join(present)
+
+
+def test_org_chart_runtime_contract_remains_available() -> None:
+    """Runtime role policies still have the registry/API contract even though the tab is plugin-owned."""
+    markers = {
+        ".hermes/plans/2026-04-22_164051-role-team-hybrid-runtime.md": [
+            "Hermes role-team runtime overhaul",
+            "persistent_role_instance",
+            "role skill-policy",
+        ],
+        "web/src/data/hermesOrgChart.registry.yaml": [
+            "persistent_role_instance",
+            "skills:",
+            "Lead / PM",
+        ],
+        "web/src/data/hermesOrgChart.generated.ts": [
+            "OrgRole",
+            "persistent_role_instance",
+            "Lead / PM",
+        ],
+        "web/src/lib/api.ts": [
+            "getOrgChart",
+            "DashboardOrgChartResponse",
+            "delegate_metrics",
+        ],
+        "hermes_cli/web_server.py": [
+            '@app.get("/api/dashboard/org-chart")',
+            "_load_dashboard_org_chart",
+            "by_agent",
+            "active_models",
+            "delegate_metrics",
+        ],
+        "web/src/pages/AnalyticsPage.tsx": [
+            "RoleExecutionEvidence",
+            "api.getOrgChart()",
+            "delegate_metrics",
+        ],
+    }
+
     missing: list[str] = []
-
-    for relative_path, markers in DASHBOARD_CUSTOMIZATION_MARKERS.items():
+    for relative_path, expected_markers in markers.items():
         path = PROJECT_ROOT / relative_path
         if not path.exists():
             missing.append(f"{relative_path}: file is missing")
             continue
-
         content = path.read_text(encoding="utf-8")
-        for marker in markers:
+        for marker in expected_markers:
             if marker not in content:
                 missing.append(f"{relative_path}: missing marker {marker!r}")
 
-    assert not missing, "Kinni dashboard customization guard failed:\n" + "\n".join(missing)
-
-
-def test_kinni_dashboard_does_not_use_upstream_sidebar_shell() -> None:
-    """The local Kinni dashboard should keep its pre-update top-tab shell, not upstream's sidebar chrome."""
-    checked_paths = [
-        "web/src/App.tsx",
-        "web/src/components/layout/kinni-dashboard-shell.tsx",
-    ]
-
-    upstream_sidebar_markers = [
-        "SelectionSwitcher",
-        "PageHeaderProvider",
-        "SidebarFooter",
-        "SidebarStatusStrip",
-        "SidebarSystemActions",
-        "data-layout-variant",
-    ]
-    present = []
-    for relative_path in checked_paths:
-        content = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-        present.extend(
-            f"{relative_path}: {marker}"
-            for marker in upstream_sidebar_markers
-            if marker in content
-        )
-
-    assert not present, "Upstream sidebar dashboard shell leaked into Kinni dashboard:\n" + "\n".join(present)
+    assert not missing, "Org-chart runtime contract guard failed:\n" + "\n".join(missing)
