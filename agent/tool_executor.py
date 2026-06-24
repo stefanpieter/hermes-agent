@@ -44,23 +44,22 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, get_runtime_budget_config
 
 logger = logging.getLogger(__name__)
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
-    """Resolve a tool-result BudgetConfig scaled to the agent's context window.
+    """Resolve a tool-result BudgetConfig for this agent.
 
-    Large-context models keep the historical 100K/200K char defaults; small
-    models (e.g. a 65K-token local model switched into mid-session) get a budget
-    proportional to their window so a single large tool result can't push the
-    request past the model's limit (#23767). Falls back to the default budget
-    when the context length isn't resolvable.
+    Runtime budget resolution composes upstream context-window scaling with the
+    local dashboard ``tool_output`` config. Large-context models keep the
+    historical defaults; small models scale down unless the user explicitly set
+    dashboard limits.
     """
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+        return get_runtime_budget_config(context_length=int(ctx)) if ctx else get_runtime_budget_config()
     except Exception:
         return DEFAULT_BUDGET
 

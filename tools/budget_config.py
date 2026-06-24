@@ -138,19 +138,41 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     )
 
 
-def get_runtime_budget_config() -> BudgetConfig:
-    """Build a BudgetConfig from persistent dashboard/config.yaml settings.
+def get_runtime_budget_config(context_length: int | None = None) -> BudgetConfig:
+    """Build a BudgetConfig from context scaling plus dashboard settings.
+
+    Upstream's context-window scaling is the baseline: small models get smaller
+    per-result/per-turn budgets while large models keep the historical defaults.
+    Persistent dashboard ``tool_output`` settings override only the keys the
+    user explicitly saved, so config defaults from ``load_config()`` do not
+    accidentally undo context-aware scaling.
 
     Registry per-tool thresholds remain in effect unless the user explicitly
     saved ``tool_output.result_persist_threshold_chars``. That keeps legacy
     defaults intact while letting the dashboard setting intentionally override
     hardcoded per-tool thresholds.
     """
+    base = budget_for_context_window(context_length)
     limits = get_tool_output_limits()
-    tool_overrides: Dict[str, int] = {}
-    if _raw_tool_output_has_nondefault_int(
+
+    has_result_override = _raw_tool_output_has_nondefault_int(
         "result_persist_threshold_chars", DEFAULT_RESULT_SIZE_CHARS
-    ):
+    )
+    has_turn_override = _raw_tool_output_has_nondefault_int(
+        "turn_budget_chars", DEFAULT_TURN_BUDGET_CHARS
+    )
+    has_preview_override = _raw_tool_output_has_nondefault_int(
+        "preview_chars", DEFAULT_PREVIEW_SIZE_CHARS
+    )
+
+    default_result_size = (
+        limits.result_persist_threshold_chars if has_result_override else base.default_result_size
+    )
+    turn_budget = limits.turn_budget_chars if has_turn_override else base.turn_budget
+    preview_size = limits.preview_chars if has_preview_override else base.preview_size
+
+    tool_overrides: Dict[str, int] = {}
+    if has_result_override:
         try:
             from tools.registry import registry
 
@@ -161,8 +183,8 @@ def get_runtime_budget_config() -> BudgetConfig:
             tool_overrides = {}
 
     return BudgetConfig(
-        default_result_size=limits.result_persist_threshold_chars,
-        turn_budget=limits.turn_budget_chars,
-        preview_size=limits.preview_chars,
+        default_result_size=default_result_size,
+        turn_budget=turn_budget,
+        preview_size=preview_size,
         tool_overrides=tool_overrides,
     )
