@@ -94,7 +94,10 @@ def test_kinni_dashboard_customizations_are_present() -> None:
 
 def test_kinni_dashboard_does_not_use_upstream_sidebar_shell() -> None:
     """The local Kinni dashboard should keep its pre-update top-tab shell, not upstream's sidebar chrome."""
-    app = (PROJECT_ROOT / "web/src/App.tsx").read_text(encoding="utf-8")
+    checked_paths = [
+        "web/src/App.tsx",
+        "web/src/components/layout/kinni-dashboard-shell.tsx",
+    ]
 
     upstream_sidebar_markers = [
         "SelectionSwitcher",
@@ -104,6 +107,13 @@ def test_kinni_dashboard_does_not_use_upstream_sidebar_shell() -> None:
         "SidebarSystemActions",
         "data-layout-variant",
     ]
-    present = [marker for marker in upstream_sidebar_markers if marker in app]
+    present = []
+    for relative_path in checked_paths:
+        content = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        present.extend(
+            f"{relative_path}: {marker}"
+            for marker in upstream_sidebar_markers
+            if marker in content
+        )
 
     assert not present, "Upstream sidebar dashboard shell leaked into Kinni dashboard:\n" + "\n".join(present)

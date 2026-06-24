@@ -275,6 +275,33 @@ class TestRuntimeBudgetConfig:
         assert cfg.turn_budget == int(65_536 * 4 * 0.30)
         assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
 
+    def test_raw_default_tool_output_values_do_not_override_context_scaling(self, monkeypatch):
+        """Saved raw values matching built-in defaults are treated as defaults, not user overrides."""
+        from tools import budget_config as mod
+        from tools.tool_output_config import ToolOutputLimits
+
+        raw_defaults = {
+            "result_persist_threshold_chars": DEFAULT_RESULT_SIZE_CHARS,
+            "turn_budget_chars": DEFAULT_TURN_BUDGET_CHARS,
+            "preview_chars": DEFAULT_PREVIEW_SIZE_CHARS,
+        }
+        monkeypatch.setattr(
+            mod,
+            "get_tool_output_limits",
+            lambda: ToolOutputLimits(
+                result_persist_threshold_chars=DEFAULT_RESULT_SIZE_CHARS,
+                turn_budget_chars=DEFAULT_TURN_BUDGET_CHARS,
+                preview_chars=DEFAULT_PREVIEW_SIZE_CHARS,
+            ),
+        )
+        monkeypatch.setattr(mod, "_raw_tool_output_value", lambda key: raw_defaults.get(key))
+
+        cfg = mod.get_runtime_budget_config(context_length=65_536)
+
+        assert cfg.default_result_size == int(65_536 * 4 * 0.15)
+        assert cfg.turn_budget == int(65_536 * 4 * 0.30)
+        assert cfg.preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+
     def test_explicit_dashboard_result_threshold_overrides_context_scaled_default(self, monkeypatch):
         from tools import budget_config as mod
         from tools.tool_output_config import ToolOutputLimits
