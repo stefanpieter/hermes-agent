@@ -1,5 +1,12 @@
 export { ThemeProvider, useTheme } from "./context";
-export { BUILTIN_THEMES } from "./presets";
+export { BUILTIN_THEMES, defaultTheme } from "./presets";
+export {
+  FONT_CHOICES,
+  THEME_DEFAULT_FONT_ID,
+  getFontChoice,
+  isOverrideFont,
+} from "./fonts";
+export type { FontChoice, FontCategory } from "./fonts";
 export type {
   DashboardTheme,
   ThemeAssets,
@@ -8,6 +15,7 @@ export type {
   ThemeLayer,
   ThemeLayout,
   ThemeLayoutVariant,
+  ThemeListEntry,
   ThemeListResponse,
   ThemePalette,
   ThemeTypography,
