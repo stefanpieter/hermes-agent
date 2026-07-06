@@ -23,8 +23,115 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+
+AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER = "[Continuing after max-iteration exhaustion]"
+DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT = (
+    "Continue autonomously from the current state. Do not repeat completed work. "
+    "Stop and summarize if blocked, if approval is required, or before "
+    "destructive/externally visible actions."
+)
+
+
+def is_auto_continue_on_max_iterations_prompt(content: Any) -> bool:
+    """Return True when transcript content is the synthetic budget-continuation prompt."""
+    if isinstance(content, list):
+        return False
+    text = "" if content is None else str(content)
+    return text.startswith(AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER)
+
+
+def _auto_continue_on_max_iterations_config() -> dict[str, Any]:
+    """Return normalized config for the opt-in max-iteration auto-continue path."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return {}
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    raw = (
+        agent_cfg.get("auto_continue_on_max_iterations", {})
+        if isinstance(agent_cfg, dict)
+        else {}
+    )
+    if raw is True:
+        raw = {"enabled": True}
+    if raw is False or raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def maybe_auto_continue_on_max_iterations(agent, messages: list, api_call_count: int) -> bool:
+    """Inject a synthetic continuation turn when iteration budget is exhausted.
+
+    Returns ``True`` when the caller should keep looping with a fresh
+    ``IterationBudget`` instead of falling through to the finalizer's normal
+    toolless exhaustion summary. The total ``api_call_count`` is intentionally
+    *not* reset by this helper; the current loop uses ``IterationBudget`` for
+    the per-continuation cap and keeps API-call accounting monotonic.
+    """
+    from agent.conversation_loop import logger
+
+    try:
+        cfg = _auto_continue_on_max_iterations_config()
+        if not bool(cfg.get("enabled", False)):
+            return False
+        try:
+            max_auto_continues = int(cfg.get("max_auto_continues", 0) or 0)
+        except (TypeError, ValueError):
+            max_auto_continues = 0
+        if max_auto_continues <= 0:
+            return False
+
+        used = int(getattr(agent, "_auto_continue_on_max_iterations_used", 0) or 0)
+        if used >= max_auto_continues:
+            return False
+
+        prompt = str(
+            cfg.get("prompt") or DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT
+        ).strip()
+        if not prompt:
+            prompt = DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT
+
+        from agent.iteration_budget import IterationBudget
+
+        messages.append({
+            "role": "user",
+            "content": f"{AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER}\n{prompt}",
+        })
+        agent.iteration_budget = IterationBudget(agent.max_iterations)
+        agent._budget_exhausted_injected = False
+        agent._budget_grace_call = False
+        agent._auto_continue_on_max_iterations_used = used + 1
+        agent._touch_activity(
+            "auto-continue after iteration budget exhaustion "
+            f"({agent._auto_continue_on_max_iterations_used}/{max_auto_continues})"
+        )
+        try:
+            agent._emit_status(
+                "🔁 Auto-continuing after iteration budget exhaustion "
+                f"({agent._auto_continue_on_max_iterations_used}/{max_auto_continues})"
+            )
+        except Exception:
+            pass
+        logger.info(
+            "Auto-continue on max iterations triggered (%d/%d used, api_calls=%d, model=%s, session=%s)",
+            agent._auto_continue_on_max_iterations_used,
+            max_auto_continues,
+            api_call_count,
+            getattr(agent, "model", ""),
+            getattr(agent, "session_id", None) or "none",
+        )
+        return True
+    except Exception:
+        logger.warning("Failed to auto-continue after iteration exhaustion", exc_info=True)
+        return False
 
 
 def finalize_turn(

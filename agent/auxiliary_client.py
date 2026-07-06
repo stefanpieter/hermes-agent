@@ -2300,23 +2300,76 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
-    """Build a CodexAuxiliaryClient for an explicitly-requested model.
+def _select_codex_aux_model(
+    access_token: str,
+    requested_model: Optional[str],
+) -> Optional[str]:
+    """Choose a Codex OAuth auxiliary model without guessing stale defaults.
 
-    There is no auto-selection of the Codex model: the ChatGPT-account
-    Codex endpoint's accepted model list is an undocumented, drifting
-    allow-list, so any hardcoded default we pick goes stale.  The caller
-    is responsible for passing the model (e.g. from the user's own
-    ``model.model`` or ``auxiliary.<task>.model`` config).
-
-    Returns (None, None) when no Codex OAuth token is available.
+    If live account discovery is available, honor the requested model only when
+    the account catalog includes it; otherwise fall back to the first live model
+    the account reports. If live discovery is unavailable, keep an explicit
+    requested model because that is a user/config choice, not a hardcoded guess.
     """
-    if not model:
-        logger.warning(
-            "Auxiliary client: openai-codex requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+    requested = _normalize_resolved_model(requested_model, "openai-codex")
+    requested = str(requested or "").strip()
+
+    live_models: List[str] = []
+    try:
+        from hermes_cli.codex_models import get_live_codex_model_ids
+
+        for model_id in get_live_codex_model_ids(access_token) or []:
+            model_id = _normalize_resolved_model(model_id, "openai-codex")
+            model_id = str(model_id or "").strip()
+            if model_id and model_id not in live_models:
+                live_models.append(model_id)
+    except Exception as exc:
+        logger.debug("Auxiliary client: Codex live model catalog unavailable: %s", exc)
+
+    if live_models:
+        if requested and requested in live_models:
+            return requested
+        if requested:
+            logger.warning(
+                "Auxiliary client: Codex model %s is not in the live account "
+                "catalog; using %s instead",
+                requested,
+                live_models[0],
+            )
+        else:
+            logger.debug(
+                "Auxiliary client: openai-codex requested without a model; "
+                "using %s from the live account catalog",
+                live_models[0],
+            )
+        return live_models[0]
+
+    if requested:
+        logger.debug(
+            "Auxiliary client: Codex live model catalog unavailable; using "
+            "explicit requested model %s",
+            requested,
         )
-        return None, None
+        return requested
+
+    logger.warning(
+        "Auxiliary client: openai-codex requested without a model and live "
+        "model discovery was unavailable. Pass model explicitly "
+        "(model.model or auxiliary.<task>.model in config.yaml)."
+    )
+    return None
+
+
+def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a CodexAuxiliaryClient using a live-supported Codex model when possible.
+
+    The ChatGPT-account Codex endpoint's accepted model list is an
+    undocumented, drifting allow-list. Never choose a hardcoded default here;
+    use the live account catalog when it is reachable, otherwise preserve the
+    explicit user/config-selected model.
+
+    Returns (None, None) when no Codex OAuth token or model is available.
+    """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
@@ -2332,13 +2385,18 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         if not codex_token:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
+
+    selected_model = _select_codex_aux_model(codex_token, model)
+    if not selected_model:
+        return None, None
+
+    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", selected_model)
     real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(real_client, selected_model), selected_model
 
 
 def _try_azure_foundry(

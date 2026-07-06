@@ -7160,12 +7160,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("(._.) No messages to retry.")
             return None
         
-        # Walk backwards to find the last user message
+        try:
+            from agent.turn_finalizer import (
+                is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt,
+            )
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
+
+        # Walk backwards to find the last real user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
+            msg = self.conversation_history[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            last_user_idx = i
+            break
         
         if last_user_idx is None:
             print("(._.) No user message found to retry.")
@@ -7208,13 +7224,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if n < 1:
             n = 1
 
-        # Walk backwards collecting the indices of the last N user messages.
+        try:
+            from agent.turn_finalizer import (
+                is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt,
+            )
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
+
+        # Walk backwards collecting the indices of the last N real user messages.
         user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                user_indices.append(i)
-                if len(user_indices) >= n:
-                    break
+            msg = self.conversation_history[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            user_indices.append(i)
+            if len(user_indices) >= n:
+                break
 
         if not user_indices:
             print("(._.) No user message found to undo.")

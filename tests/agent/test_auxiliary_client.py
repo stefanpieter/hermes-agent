@@ -809,6 +809,46 @@ class TestResolveProviderClientUniversalModelFallback:
         assert model == "gpt-5.4"
         assert mock_build.call_args.args[0] == "gpt-5.4"
 
+    def test_codex_uses_live_catalog_when_requested_model_is_stale(self):
+        """openai-codex: stale explicit models are replaced from the live account catalog."""
+        import agent.auxiliary_client as aux
+
+        real_client = MagicMock()
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="tok-live"),
+            patch(
+                "hermes_cli.codex_models.get_live_codex_model_ids",
+                return_value=["gpt-5.4", "gpt-5.3-codex"],
+            ),
+            patch("agent.auxiliary_client._create_openai_client", return_value=real_client),
+        ):
+            client, model = aux._build_codex_client("gpt-5.2-codex")
+
+        assert client is not None
+        assert client.chat.completions._model == "gpt-5.4"
+        assert model == "gpt-5.4"
+
+    def test_codex_keeps_explicit_model_when_live_catalog_unavailable(self):
+        """A user-selected Codex model is still used when live discovery is unavailable."""
+        import agent.auxiliary_client as aux
+
+        real_client = MagicMock()
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="tok-live"),
+            patch(
+                "hermes_cli.codex_models.get_live_codex_model_ids",
+                return_value=[],
+            ),
+            patch("agent.auxiliary_client._create_openai_client", return_value=real_client),
+        ):
+            client, model = aux._build_codex_client("gpt-5.2-codex")
+
+        assert client is not None
+        assert client.chat.completions._model == "gpt-5.2-codex"
+        assert model == "gpt-5.2-codex"
+
     def test_empty_model_for_catalog_provider_uses_catalog_default(self):
         """anthropic / nous / openrouter / etc.: catalog default wins
         over main model when no explicit model is passed.
