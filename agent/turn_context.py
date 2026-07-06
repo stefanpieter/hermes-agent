@@ -256,6 +256,7 @@ def build_turn_context(
 
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    agent._auto_continue_on_max_iterations_used = 0
 
     # Log conversation turn start for debugging/observability.
     _preview_text = summarize_user_message_for_log(user_message)

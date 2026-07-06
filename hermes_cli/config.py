@@ -1004,6 +1004,28 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Opt-in continuation when a single turn exhausts max_turns before
+        # producing a final answer. When enabled, Hermes appends a synthetic
+        # user nudge, rebuilds the per-turn IterationBudget, and keeps working
+        # instead of asking the model for the normal exhaustion summary. Keep
+        # capped: each continuation is another full max_turns budget.
+        "auto_continue_on_max_iterations": {
+            "enabled": False,
+            "max_auto_continues": 0,
+            "prompt": "",
+        },
+        # Opt-in handoff packet generation after repeated context compression.
+        # mode="packet" writes a redacted markdown packet under HERMES_HOME;
+        # mode="platform" additionally queues SessionDB.request_handoff() to
+        # the configured gateway platform. Never rotates sessions itself.
+        "auto_handoff_on_compression": {
+            "enabled": False,
+            "after_compressions": 2,
+            "max_auto_handoffs": 1,
+            "mode": "packet",
+            "platform": "",
+            "handoff_artifact_dir": "handoffs",
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
