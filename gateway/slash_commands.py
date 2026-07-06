@@ -2243,14 +2243,28 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(session_entry.session_id)
         
-        # Find the last user message
+        # Find the last real user message
         last_user_msg = None
         last_user_idx = None
+        try:
+            from agent.turn_finalizer import (
+                is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt,
+            )
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
         for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
-                last_user_idx = i
-                break
+            if history[i].get("role") != "user":
+                continue
+            content = history[i].get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            last_user_msg = text
+            last_user_idx = i
+            break
         
         if not last_user_msg:
             return t("gateway.retry.no_previous")
