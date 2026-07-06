@@ -686,7 +686,7 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while True:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -696,6 +696,23 @@ def run_conversation(
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+            break
+
+        if not agent._budget_grace_call and agent.iteration_budget.remaining <= 0:
+            from agent.turn_finalizer import maybe_auto_continue_on_max_iterations
+
+            if maybe_auto_continue_on_max_iterations(agent, messages, api_call_count):
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        "\n🔁 Iteration budget exhausted — auto-continuing with a fresh budget..."
+                    )
+                continue
+            _turn_exit_reason = "budget_exhausted"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⚠️  Iteration budget exhausted "
+                    f"({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)"
+                )
             break
         
         api_call_count += 1
