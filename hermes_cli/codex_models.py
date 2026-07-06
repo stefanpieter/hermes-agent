@@ -223,6 +223,18 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     return deduped
 
 
+def get_live_codex_model_ids(access_token: Optional[str]) -> List[str]:
+    """Return Codex model IDs from the live account catalog only.
+
+    Unlike :func:`get_codex_model_ids`, this never falls back to local cache or
+    curated defaults. Runtime routing uses this to avoid silently selecting a
+    stale hardcoded model for the ChatGPT-account Codex OAuth backend.
+    """
+    if not access_token:
+        return []
+    return _add_forward_compat_models(_fetch_models_from_api(access_token))
+
+
 def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     """Return available Codex model IDs, trying API first, then local sources.
     
