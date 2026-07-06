@@ -738,6 +738,26 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Opt-in continuation when a single turn exhausts max_turns before producing a
+  # final answer. Hermes appends a synthetic "continue from current state" user
+  # message, rebuilds the per-turn budget, and keeps working. Keep this capped:
+  # each continuation grants another full max_turns budget.
+  # auto_continue_on_max_iterations:
+  #   enabled: false
+  #   max_auto_continues: 0
+  #   prompt: ""
+
+  # Opt-in handoff packet generation after repeated context compression.
+  # mode: packet writes a redacted markdown packet under HERMES_HOME.
+  # mode: platform also queues SessionDB.request_handoff() to a gateway platform.
+  # auto_handoff_on_compression:
+  #   enabled: false
+  #   after_compressions: 2
+  #   max_auto_handoffs: 1
+  #   mode: packet
+  #   platform: ""
+  #   handoff_artifact_dir: handoffs
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
