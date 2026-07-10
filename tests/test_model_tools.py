@@ -11,6 +11,7 @@ from model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    _resolve_active_context_length,
 )
 
 
@@ -587,3 +588,64 @@ class TestDisabledToolsetsPostureToolset:
             )
         }
         assert "write_file" not in no_file
+
+
+class TestActiveContextLength:
+    def test_resolution_is_provider_aware_and_uses_runtime_credentials(self):
+        config = {
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "base_url": "https://configured.invalid/codex",
+            }
+        }
+        runtime = {
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-token",
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime) as mock_runtime,
+            patch("agent.model_metadata.get_model_context_length", return_value=372_000) as mock_context,
+        ):
+            assert _resolve_active_context_length() == 372_000
+
+        mock_runtime.assert_called_once_with(
+            requested="openai-codex",
+            target_model="gpt-5.6-sol",
+        )
+        mock_context.assert_called_once_with(
+            "gpt-5.6-sol",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="test-token",
+            provider="openai-codex",
+            config_context_length=None,
+        )
+
+    def test_runtime_resolution_failure_still_uses_provider_offline_fallback(self):
+        config = {
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                side_effect=RuntimeError("credentials unavailable"),
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=372_000) as mock_context,
+        ):
+            assert _resolve_active_context_length() == 372_000
+
+        mock_context.assert_called_once_with(
+            "gpt-5.6-sol",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="",
+            provider="openai-codex",
+            config_context_length=None,
+        )

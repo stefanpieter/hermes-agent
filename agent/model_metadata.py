@@ -4,6 +4,7 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -1874,23 +1875,23 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
-# Known ChatGPT Codex OAuth context windows (observed via live
-# chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
-# `context_window` values, which are what Codex actually enforces — the
-# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
-# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+# Known ChatGPT Codex OAuth maximum context windows (observed via live
+# chatgpt.com/backend-api/codex/models probe). Hermes uses each model's
+# positive `max_context_window` when advertised, falling back to
+# `context_window` when the maximum field is absent. This is intentionally
+# provider-specific: direct OpenAI API limits for the same slug may differ.
 #
-# Used as a fallback when the live probe fails (no token, network error).
-# Longest keys first so substring match picks the most specific entry.
+# Used only when the live probe fails (no token or network error). Longest
+# keys are matched first so variants do not fall through to a family entry.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-5.6-terra": 372_000,
+    "gpt-5.6-luna": 372_000,
+    "gpt-5.6-sol": 372_000,
     "gpt-5.1-codex-max": 272_000,
     "gpt-5.1-codex-mini": 272_000,
     "gpt-5.3-codex": 272_000,
     # Spark runs on specialised low-latency hardware and exposes a smaller
-    # 128k window than other Codex OAuth slugs. Listed explicitly so the
-    # longest-key-first fallback resolves it correctly — substring match
-    # on "gpt-5.3-codex" otherwise wins and reports 272k. Availability is
-    # gated by ChatGPT Pro entitlement on the Codex backend.
+    # 128k maximum than other Codex OAuth slugs.
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
@@ -1898,7 +1899,7 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.6-terra": 272_000,
     "gpt-5.6-luna": 272_000,
     "gpt-5.5": 272_000,
-    "gpt-5.4": 272_000,
+    "gpt-5.4": 1_000_000,
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
 }
@@ -1906,22 +1907,25 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 
 _codex_oauth_context_cache: Dict[str, int] = {}
 _codex_oauth_context_cache_time: float = 0.0
+_codex_oauth_context_cache_identity: str = ""
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
-    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+    """Probe ChatGPT Codex for each model's largest advertised context window.
 
-    Codex OAuth imposes its own context limits that differ from the direct
-    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
-    `context_window` field in each model entry is the authoritative source.
-
-    Returns a ``{slug: context_window}`` dict. Empty on failure.
+    Prefer a positive ``max_context_window`` and fall back to the ordinary
+    ``context_window`` when no separate maximum is advertised. Returns a
+    ``{slug: maximum_context_window}`` mapping and an empty dict on failure.
     """
-    global _codex_oauth_context_cache, _codex_oauth_context_cache_time
+    global _codex_oauth_context_cache
+    global _codex_oauth_context_cache_time
+    global _codex_oauth_context_cache_identity
     now = time.time()
+    token_identity = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
     if (
         _codex_oauth_context_cache
+        and _codex_oauth_context_cache_identity == token_identity
         and now - _codex_oauth_context_cache_time < _CODEX_OAUTH_CONTEXT_CACHE_TTL
     ):
         return _codex_oauth_context_cache
@@ -1951,12 +1955,15 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
             continue
         slug = item.get("slug")
         ctx = item.get("context_window")
-        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
-            result[slug.strip()] = ctx
+        max_ctx = item.get("max_context_window")
+        selected_ctx = max_ctx if isinstance(max_ctx, int) and max_ctx > 0 else ctx
+        if isinstance(slug, str) and isinstance(selected_ctx, int) and selected_ctx > 0:
+            result[slug.strip()] = selected_ctx
 
     if result:
         _codex_oauth_context_cache = result
         _codex_oauth_context_cache_time = now
+        _codex_oauth_context_cache_identity = token_identity
     return result
 
 
@@ -2173,25 +2180,29 @@ def get_model_context_length(
         return endpoint_context
 
     # 1. Check persistent cache (model+provider)
+    # Keep the last successfully discovered Codex maximum while an
+    # authenticated live reconciliation is attempted.  If that probe fails,
+    # this retained value must win over a hardcoded offline fallback.
+    retained_codex_context: Optional[int] = None
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
     if base_url and not _skip_persistent_context_cache(base_url, provider):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
-            # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
-            if provider == "openai-codex" and cached >= 400_000:
-                logger.info(
-                    "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
-                    "re-resolving via live /models probe",
+            # Codex exposes live per-model maxima and may increase them without
+            # changing the model slug. When a bearer token is available, bypass
+            # the persistent cache so the in-process one-hour live catalog can
+            # reconcile and persist the current maximum. Offline starts still
+            # use the last successfully discovered value.
+            if provider == "openai-codex" and api_key:
+                retained_codex_context = cached
+                logger.debug(
+                    "Bypassing persistent Codex cache for %s@%s -> %s; "
+                    "reconciling against live maximum context metadata",
                     model, base_url, f"{cached:,}",
                 )
-                _invalidate_cached_context_length(model, base_url)
+                # Fall through; step 5c probes Codex and updates the cache.
             # Invalidate stale 32k cache entries for Kimi-family models.
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(
@@ -2377,14 +2388,40 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
     if effective_provider == "openai-codex":
-        # Codex OAuth enforces lower context limits than the direct OpenAI
-        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
-        # on Codex). Authoritative source is Codex's own /models endpoint.
-        codex_ctx = _resolve_codex_oauth_context_length(model, access_token=api_key or "")
-        if codex_ctx:
+        # Resolve the largest provider-advertised Codex OAuth window for the
+        # selected slug. This is intentionally provider-aware: direct OpenAI
+        # API metadata for the same model may advertise a different maximum.
+        # Persist only a value selected from a successful live catalog.  A
+        # transient auth/network/catalog failure must preserve the prior
+        # persistent maximum rather than overwrite it with a fallback table.
+        codex_live_ctx: Optional[int] = None
+        if api_key:
+            live_contexts = _fetch_codex_oauth_context_lengths(api_key)
+            model_bare = _strip_provider_prefix(model).strip()
+            codex_live_ctx = live_contexts.get(model_bare)
+            if codex_live_ctx is None:
+                model_lower = model_bare.lower()
+                codex_live_ctx = next(
+                    (
+                        ctx for slug, ctx in live_contexts.items()
+                        if slug.lower() == model_lower
+                    ),
+                    None,
+                )
+        if codex_live_ctx:
             if base_url:
-                save_context_length(model, base_url, codex_ctx)
-            return codex_ctx
+                save_context_length(model, base_url, codex_live_ctx)
+            return codex_live_ctx
+        if retained_codex_context is not None:
+            logger.debug(
+                "Codex live context reconciliation unavailable for %s; "
+                "retaining last successful value %s",
+                model, f"{retained_codex_context:,}",
+            )
+            return retained_codex_context
+        codex_fallback_ctx = _resolve_codex_oauth_context_length(model, access_token="")
+        if codex_fallback_ctx:
+            return codex_fallback_ctx
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
