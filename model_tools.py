@@ -583,7 +583,37 @@ def _resolve_active_context_length() -> int:
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        provider = str(model_cfg.get("provider") or "").strip()
+        runtime = {}
+        try:
+            runtime = resolve_runtime_provider(
+                requested=provider or None,
+                target_model=model_id,
+            )
+        except Exception as exc:
+            # Credential/provider resolution may fail while offline.  Keep
+            # resolving from the configured provider/base URL so persistent
+            # metadata and provider-specific fallback tables still govern the
+            # tool-search activation threshold.
+            logger.debug(
+                "Runtime provider unavailable during context resolution; "
+                "using configured provider metadata: %s",
+                exc,
+            )
+        raw_context = model_cfg.get("context_length")
+        try:
+            configured_context = int(raw_context) if raw_context is not None else None
+        except (TypeError, ValueError):
+            configured_context = None
+        return int(get_model_context_length(
+            model_id,
+            base_url=str(runtime.get("base_url") or model_cfg.get("base_url") or ""),
+            api_key=str(runtime.get("api_key") or ""),
+            provider=str(runtime.get("provider") or provider),
+            config_context_length=configured_context,
+        ) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0
