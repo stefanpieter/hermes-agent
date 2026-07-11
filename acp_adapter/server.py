@@ -78,6 +78,7 @@ from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
+from tools.process_registry import process_registry
 
 logger = logging.getLogger(__name__)
 
@@ -522,6 +523,8 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._connected_session_ids: set[str] = set()
+        self._background_notification_task: asyncio.Task | None = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -529,7 +532,68 @@ class HermesACPAgent(acp.Agent):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+        if self._background_notification_task is not None:
+            self._background_notification_task.cancel()
+        try:
+            self._background_notification_task = asyncio.get_running_loop().create_task(
+                self._background_notification_loop(conn)
+            )
+        except RuntimeError:
+            self._background_notification_task = None
+            logger.debug("ACP connection has no running loop for background notifications")
 
+    async def _dispatch_background_notifications_once(self) -> int:
+        """Deliver pending process events owned by sessions on this ACP connection."""
+        conn = self._conn
+        if conn is None or not self._connected_session_ids:
+            return 0
+        owns_connected_session = (
+            lambda event: str(event.get("session_key") or "")
+            in self._connected_session_ids
+        )
+        pending = process_registry.drain_notifications(
+            owns_event=owns_connected_session,
+            skip_poll_observed=False,
+        )
+        delivered = 0
+        for event, text in pending:
+            session_id = str(event.get("session_key") or "")
+            if session_id not in self._connected_session_ids:
+                # drain_notifications preserves legacy ownerless ordinary
+                # notifications even with an ownership callback. ACP is a
+                # multi-session transport, so fail closed and leave those events
+                # queued for a caller that can prove ownership or legacy CLI use.
+                process_registry.completion_queue.put(event)
+                continue
+            try:
+                await conn.session_update(
+                    session_id=session_id,
+                    update=AgentMessageChunk(
+                        session_update="agent_message_chunk",
+                        content=TextContentBlock(type="text", text=text),
+                        field_meta={"hermes": {"backgroundNotification": True}},
+                    ),
+                )
+                delivered += 1
+            except Exception:
+                process_registry.completion_queue.put(event)
+                logger.debug(
+                    "Failed to deliver ACP background notification for %s",
+                    session_id,
+                    exc_info=True,
+                )
+        return delivered
+
+    async def _background_notification_loop(self, conn: acp.Client) -> None:
+        """Poll the shared completion queue while this ACP connection is active."""
+        try:
+            while self._conn is conn:
+                await self._dispatch_background_notifications_once()
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("ACP background notification loop stopped", exc_info=True)
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Return ACP session modes while preserving Zed's separate model picker.
@@ -1117,6 +1181,7 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
@@ -1141,6 +1206,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
@@ -1188,6 +1254,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
+        self._connected_session_ids.add(state.session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
@@ -1236,6 +1303,7 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.fork_session(session_id, cwd=cwd)
         new_id = state.session_id if state else ""
         if state is not None:
+            self._connected_session_ids.add(state.session_id)
             await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
@@ -1311,6 +1379,7 @@ class HermesACPAgent(acp.Agent):
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
 
+        self._connected_session_ids.add(state.session_id)
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
         text_only_prompt = all(isinstance(block, TextContentBlock) for block in prompt)
