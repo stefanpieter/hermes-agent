@@ -238,6 +238,57 @@ class TestSessionOps:
         assert state.cwd == "/home/user/project"
 
     @pytest.mark.asyncio
+    async def test_dispatches_only_background_notifications_owned_by_connected_sessions(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        agent._conn = conn
+        agent._connected_session_ids.add("acp-owned")
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_owned",
+            "session_key": "acp-owned",
+            "command": "printf done",
+            "exit_code": 0,
+            "output": "done",
+        })
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_foreign",
+            "session_key": "acp-foreign",
+            "command": "printf secret",
+            "exit_code": 0,
+            "output": "secret",
+        })
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_ownerless",
+            "command": "printf legacy",
+            "exit_code": 0,
+            "output": "legacy",
+        })
+
+        delivered = await agent._dispatch_background_notifications_once()
+
+        assert delivered == 1
+        conn.session_update.assert_awaited_once()
+        assert conn.session_update.await_args.kwargs["session_id"] == "acp-owned"
+        update = conn.session_update.await_args.kwargs["update"]
+        assert update.session_update == "agent_message_chunk"
+        assert update.field_meta == {"hermes": {"backgroundNotification": True}}
+        assert "proc_owned completed normally" in update.content.text
+        leftovers = []
+        while not registry.completion_queue.empty():
+            leftovers.append(registry.completion_queue.get_nowait()["session_id"])
+        assert leftovers == ["proc_foreign", "proc_ownerless"]
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")
