@@ -1346,6 +1346,34 @@ def test_drain_notifications_empty_queue():
     assert results == []
 
 
+def test_drain_notifications_event_filter_scopes_all_event_types(registry):
+    """A transport-level filter must leave every foreign event queued."""
+    registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "acp-owned",
+        "command": "echo owned",
+        "exit_code": 0,
+        "output": "owned",
+    })
+    registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_foreign",
+        "session_key": "acp-foreign",
+        "command": "tail -f log",
+        "pattern": "READY",
+        "output": "READY",
+    })
+
+    results = registry.drain_notifications(
+        event_filter=lambda event: event.get("session_key") == "acp-owned",
+    )
+
+    assert [event["session_id"] for event, _ in results] == ["proc_owned"]
+    leftover = registry.completion_queue.get_nowait()
+    assert leftover["session_id"] == "proc_foreign"
+
+
 # ---------------------------------------------------------------------------
 # _terminate_host_pid — cross-platform process-tree termination
 # ---------------------------------------------------------------------------

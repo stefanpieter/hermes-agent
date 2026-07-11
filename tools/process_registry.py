@@ -1148,25 +1148,40 @@ class ProcessRegistry:
         """
         return session_id in self._completion_consumed or session_id in self._poll_observed
 
-    def drain_notifications(self) -> "list[tuple[dict, str]]":
+    def drain_notifications(self, event_filter=None) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
         Skips completion events the agent already consumed via wait/log or
         observed inline via poll() (see ``_drain_should_skip``).
+
+        ``event_filter(evt) -> bool`` is a transport-level positive ownership
+        check applied to every notification type. Non-matching events are
+        re-queued so another transport/session can claim them.
         """
         results = []
+        requeue = []
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()
             except Exception:
                 break
             _evt_sid = evt.get("session_id", "")
+            if event_filter is not None:
+                try:
+                    accepted = bool(event_filter(evt))
+                except Exception:
+                    accepted = False
+                if not accepted:
+                    requeue.append(evt)
+                    continue
             if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
+        for evt in requeue:
+            self.completion_queue.put(evt)
         return results
 
     def get(self, session_id: str) -> Optional[ProcessSession]:
