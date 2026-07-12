@@ -534,10 +534,26 @@ class HermesACPAgent(acp.Agent):
         logger.info("ACP client connected")
         if self._background_notification_task is not None:
             self._background_notification_task.cancel()
+        self._background_notification_task = None
+        self._ensure_background_notification_task()
+
+
+    def _ensure_background_notification_task(self) -> None:
+        """Ensure async process notifications have a live dispatcher on this loop."""
+        conn = self._conn
+        task = self._background_notification_task
+        if conn is None or (task is not None and not task.done()):
+            return
         try:
-            self._background_notification_task = asyncio.get_running_loop().create_task(
-                self._background_notification_loop(conn)
-            )
+            loop = asyncio.get_running_loop()
+            coroutine = self._background_notification_loop(conn)
+            created = loop.create_task(coroutine)
+            if not asyncio.isfuture(created):
+                coroutine.close()
+                self._background_notification_task = None
+                return
+            self._background_notification_task = created
+            logger.info("ACP background notification dispatcher started")
         except RuntimeError:
             self._background_notification_task = None
             logger.debug("ACP connection has no running loop for background notifications")
@@ -591,6 +607,12 @@ class HermesACPAgent(acp.Agent):
                     ),
                 )
                 delivered += 1
+                logger.info(
+                    "ACP background notification delivered session=%s process=%s status=%s",
+                    session_id,
+                    process_meta["id"],
+                    process_meta["status"],
+                )
             except Exception:
                 process_registry.completion_queue.put(event)
                 logger.debug(
@@ -1390,6 +1412,7 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
+        self._ensure_background_notification_task()
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
