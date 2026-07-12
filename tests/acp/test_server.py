@@ -1136,6 +1136,27 @@ class TestPrompt:
         assert state.history == expected_history
 
     @pytest.mark.asyncio
+    async def test_prompt_binds_acp_session_key_for_tools(self, agent):
+        """Terminal/process tools must inherit the stable ACP session UUID."""
+        from tools.approval import get_current_session_key
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        observed = []
+
+        def run_conversation(**_kwargs):
+            observed.append(get_current_session_key(default=""))
+            return {"final_response": "done", "messages": []}
+
+        state.agent.run_conversation = run_conversation
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="start background work")],
+            session_id=new_resp.session_id,
+        )
+
+        assert observed == [new_resp.session_id]
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):
         """The final response should be sent as an AgentMessageChunk."""
         new_resp = await agent.new_session(cwd=".")
