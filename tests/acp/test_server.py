@@ -274,7 +274,17 @@ class TestSessionOps:
         assert conn.session_update.await_args.kwargs["session_id"] == "acp-owned"
         update = conn.session_update.await_args.kwargs["update"]
         assert update.session_update == "agent_message_chunk"
-        assert update.field_meta == {"hermes": {"backgroundNotification": True}}
+        assert update.field_meta == {
+            "hermes": {
+                "backgroundNotification": True,
+                "process": {
+                    "id": "proc_owned",
+                    "event": "completion",
+                    "status": "completed",
+                    "exitCode": 0,
+                },
+            }
+        }
         assert "proc_owned completed normally" in update.content.text
         assert registry.completion_queue.get_nowait()["session_id"] == "proc_foreign"
 
