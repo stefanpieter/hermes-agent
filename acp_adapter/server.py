@@ -566,12 +566,28 @@ class HermesACPAgent(acp.Agent):
                 process_registry.completion_queue.put(event)
                 continue
             try:
+                event_type = str(event.get("type") or "completion")
+                process_status = "running"
+                if event_type == "completion":
+                    process_status = "completed" if event.get("exit_code") == 0 else "failed"
+                process_meta = {
+                    "id": str(event.get("session_id") or ""),
+                    "event": event_type,
+                    "status": process_status,
+                }
+                if event.get("exit_code") is not None:
+                    process_meta["exitCode"] = event.get("exit_code")
                 await conn.session_update(
                     session_id=session_id,
                     update=AgentMessageChunk(
                         session_update="agent_message_chunk",
                         content=TextContentBlock(type="text", text=text),
-                        field_meta={"hermes": {"backgroundNotification": True}},
+                        field_meta={
+                            "hermes": {
+                                "backgroundNotification": True,
+                                "process": process_meta,
+                            }
+                        },
                     ),
                 )
                 delivered += 1
