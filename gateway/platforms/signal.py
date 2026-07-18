@@ -501,10 +501,14 @@ class SignalAdapter(BasePlatformAdapter):
                         f"{self.http_url}/api/v1/check", timeout=10.0
                     )
                     if resp.status_code == 200:
-                        # Daemon is alive but SSE is idle — update activity to
-                        # avoid repeated warnings (connection may just be quiet)
-                        self._last_sse_activity = time.time()
-                        logger.debug("Signal: daemon healthy, SSE idle")
+                        # Daemon is alive but the SSE stream has gone quiet for
+                        # longer than the stale threshold. signal-cli's HTTP
+                        # health can remain green while an existing events
+                        # stream is wedged, so reconnect the SSE stream instead
+                        # of merely resetting the idle timer and masking the
+                        # stuck receive path.
+                        logger.warning("Signal: daemon healthy but SSE stale, forcing reconnect")
+                        self._force_reconnect()
                     else:
                         logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
                         self._force_reconnect()
@@ -533,24 +537,28 @@ class SignalAdapter(BasePlatformAdapter):
         envelope_data = envelope.get("envelope", envelope)
 
         # Handle syncMessage: extract "Note to Self" messages (sent to own account)
-        # while still filtering other sync events (read receipts, typing, etc.)
+        # while still filtering other sync events (read receipts, typing, etc.).
+        # signal-cli 0.14.x serializes sync-sent transcripts as a wrapper with
+        # destination/recipients metadata plus a nested ``message`` data object;
+        # older shapes had the data-message fields flattened directly on
+        # ``sentMessage``. Normalize both before the common dataMessage path.
         is_note_to_self = False
         if "syncMessage" in envelope_data:
             sync_msg = envelope_data.get("syncMessage")
             if sync_msg and isinstance(sync_msg, dict):
                 sent_msg = sync_msg.get("sentMessage")
                 if sent_msg and isinstance(sent_msg, dict):
-                    dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
-                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
-                    if dest == self._account_normalized or sent_msg_group_id:
+                    sent_data_message = self._extract_sync_sent_data_message(sent_msg)
+                    sent_msg_group_info = sent_data_message.get("groupInfo") or {}
+                    sent_msg_group_id = self._extract_group_id(sent_msg_group_info)
+                    if self._sent_message_targets_self(sent_msg, envelope_data) or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if self._consume_sent_timestamp(sent_ts):
                             return
                         # Genuine user Note to Self — promote to dataMessage
                         is_note_to_self = True
-                        envelope_data = {**envelope_data, "dataMessage": sent_msg}
+                        envelope_data = {**envelope_data, "dataMessage": sent_data_message}
             if not is_note_to_self:
                 return
 
@@ -587,7 +595,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Check for group message
         group_info = data_message.get("groupInfo")
-        group_id = group_info.get("groupId") if group_info else None
+        group_id = self._extract_group_id(group_info) if group_info else None
         is_group = bool(group_id)
 
         # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
@@ -761,6 +769,127 @@ class SignalAdapter(BasePlatformAdapter):
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
 
         await self.handle_message(event)
+
+    @staticmethod
+    def _extract_group_id(group_info: Any) -> Optional[str]:
+        """Return a Signal group id across old and new signal-cli JSON shapes."""
+        if not isinstance(group_info, dict):
+            return None
+        for key in ("groupId", "id"):
+            value = group_info.get(key)
+            if value:
+                return str(value)
+        return None
+
+    @staticmethod
+    def _extract_sync_sent_data_message(sent_msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize signal-cli syncMessage.sentMessage into dataMessage shape.
+
+        signal-cli <=0.13-style events exposed fields such as ``message`` and
+        ``groupInfo`` directly on ``sentMessage``. signal-cli 0.14.x wraps the
+        real data payload in a nested ``message`` object and keeps recipient
+        metadata beside it. The rest of the adapter expects a dataMessage-like
+        dict whose ``message`` value is the text string, not the wrapper.
+        """
+        nested = sent_msg.get("dataMessage")
+        if not isinstance(nested, dict):
+            nested = sent_msg.get("message")
+
+        if isinstance(nested, dict):
+            data_message = dict(nested)
+        else:
+            data_message = {}
+            if isinstance(nested, str):
+                data_message["message"] = nested
+
+        for key in (
+            "attachments",
+            "contacts",
+            "expiresInSeconds",
+            "groupInfo",
+            "mentions",
+            "previews",
+            "quote",
+            "reaction",
+            "sticker",
+            "viewOnce",
+        ):
+            if key in sent_msg and key not in data_message:
+                data_message[key] = sent_msg[key]
+
+        if "timestamp" not in data_message and sent_msg.get("timestamp") is not None:
+            data_message["timestamp"] = sent_msg.get("timestamp")
+        return data_message
+
+    def _sent_message_targets_self(self, sent_msg: Dict[str, Any], envelope_data: Dict[str, Any]) -> bool:
+        """True when a sync-sent transcript is addressed to this Signal account."""
+        for key in (
+            "destinationNumber",
+            "destinationUuid",
+            "destinationServiceId",
+            "destinationServiceIdString",
+            "destination",
+            "recipient",
+            "recipientAddress",
+        ):
+            if self._recipient_value_matches_self(sent_msg.get(key), envelope_data):
+                return True
+
+        for key in ("recipients", "recipientAddresses"):
+            if self._recipient_value_matches_self(sent_msg.get(key), envelope_data):
+                return True
+        return False
+
+    def _recipient_value_matches_self(self, value: Any, envelope_data: Dict[str, Any]) -> bool:
+        """Match signal-cli RecipientAddress JSON against this account.
+
+        Keep this deliberately scoped to known recipient/destination values —
+        callers should not pass arbitrary message payloads, or text containing
+        the user's phone number could be mistaken for a Note-to-Self target.
+        """
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple, set)):
+            return any(self._recipient_value_matches_self(v, envelope_data) for v in value)
+        if isinstance(value, dict):
+            for key in (
+                "number",
+                "recipient",
+                "uuid",
+                "aci",
+                "pni",
+                "serviceId",
+                "serviceIdString",
+                "destinationNumber",
+                "destinationUuid",
+                "destinationServiceId",
+                "id",
+            ):
+                if self._recipient_value_matches_self(value.get(key), envelope_data):
+                    return True
+            return False
+
+        ident = str(value).strip()
+        if not ident:
+            return False
+
+        own_ids = {
+            v for v in (
+                self.account,
+                self._account_normalized,
+                envelope_data.get("sourceNumber"),
+                envelope_data.get("sourceUuid"),
+                envelope_data.get("source"),
+                self._recipient_uuid_by_number.get(self._account_normalized),
+            ) if v
+        }
+        cached_number = self._recipient_number_by_uuid.get(ident)
+        if cached_number:
+            own_ids.add(cached_number)
+        cached_uuid = self._recipient_uuid_by_number.get(ident)
+        if cached_uuid:
+            own_ids.add(cached_uuid)
+        return ident in own_ids
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
         """Cache any number↔UUID mapping observed from Signal envelopes."""

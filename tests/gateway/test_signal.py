@@ -124,6 +124,37 @@ class TestSignalConnectCleanup:
         assert adapter.client is None
         assert adapter._platform_lock_identity is None
 
+    @pytest.mark.asyncio
+    async def test_health_monitor_reconnects_stale_sse_when_daemon_is_healthy(self, monkeypatch):
+        """A healthy daemon does not prove the existing SSE stream is alive."""
+        from gateway.platforms import signal as signal_mod
+
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._running = True
+        adapter._last_sse_activity = signal_mod.time.time() - 10.0
+        adapter.client = MagicMock()
+        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        adapter._force_reconnect = MagicMock()
+
+        sleep_calls = 0
+
+        async def fake_sleep(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                adapter._running = False
+
+        monkeypatch.setattr(signal_mod, "HEALTH_CHECK_INTERVAL", 0.001)
+        monkeypatch.setattr(signal_mod, "HEALTH_CHECK_STALE_THRESHOLD", 1.0)
+        monkeypatch.setattr(signal_mod.asyncio, "sleep", fake_sleep)
+
+        await adapter._health_monitor()
+
+        adapter.client.get.assert_awaited_once_with(
+            f"{adapter.http_url}/api/v1/check", timeout=10.0
+        )
+        adapter._force_reconnect.assert_called_once()
+
 
 class TestSignalHelpers:
     def test_redact_phone_long(self):
@@ -2379,6 +2410,53 @@ class TestSignalSyncMessageHandling:
 
         assert "event" in captured, "Note to Self must reach handle_message"
         assert captured["event"].text == "note to self: buy milk"
+
+    @pytest.mark.asyncio
+    async def test_note_to_self_recipient_address_shape_promoted_to_inbound(self, monkeypatch):
+        """signal-cli 0.14.x emits sync-sent transcripts with recipient
+        metadata beside a nested message object, not flattened
+        destinationNumber/message fields. A linked-device Note-to-Self reply
+        must still become an inbound user message.
+        """
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",  # self
+                "sourceUuid": "uuid-self",
+                "timestamp": 2000000100,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destination": None,
+                        "recipients": [
+                            {
+                                "number": "+155****4567",
+                                "aci": "uuid-self",
+                                "pni": None,
+                                "username": None,
+                            }
+                        ],
+                        "timestamp": 2000000100,
+                        "message": {
+                            "message": "haku reply nested recipient",
+                            "expiresInSeconds": 0,
+                            "viewOnce": False,
+                            "attachments": [],
+                        },
+                    }
+                },
+            }
+        })
+
+        assert "event" in captured, "Nested recipient Note-to-Self must reach handle_message"
+        assert captured["event"].text == "haku reply nested recipient"
+        assert captured["event"].source.chat_id == "+155****4567"
 
     @pytest.mark.asyncio
     async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):
