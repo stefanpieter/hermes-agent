@@ -1173,8 +1173,11 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     """
     key = _context_cache_key(model, base_url)
     cache = _load_context_cache()
-    if cache.get(key) == length:
+    legacy_keys = {f"{model}@{base_url}", f"{key}/"} - {key}
+    if cache.get(key) == length and not any(k in cache for k in legacy_keys):
         return  # already stored
+    for legacy_key in legacy_keys:
+        cache.pop(legacy_key, None)
     cache[key] = length
     path = _get_context_cache_path()
     try:
@@ -1915,9 +1918,6 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
-    "gpt-5.6-sol": 272_000,
-    "gpt-5.6-terra": 272_000,
-    "gpt-5.6-luna": 272_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
