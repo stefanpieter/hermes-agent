@@ -612,12 +612,13 @@ class TestCodexOAuthContextLength:
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
-        base_url = "https://chatgpt.com/backend-api/codex"
-        stale_key = f"gpt-5.6-terra@{base_url}"
+        base_url = "https://chatgpt.com/backend-api/codex/"
+        legacy_cache_key = f"gpt-5.6-terra@{base_url}"
+        canonical_cache_key = "gpt-5.6-terra@https://chatgpt.com/backend-api/codex"
         other_key = "other-model@https://api.openai.com/v1/"
         import yaml as _yaml
         cache_file.write_text(_yaml.dump({"context_lengths": {
-            stale_key: stale_context,
+            legacy_cache_key: stale_context,
             other_key: 128_000,
         }}))
 
@@ -640,7 +641,8 @@ class TestCodexOAuthContextLength:
         assert ctx == live_context
         mock_get.assert_called_once()
         remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
-        assert remaining.get(stale_key) == live_context
+        assert remaining.get(canonical_cache_key) == live_context
+        assert legacy_cache_key not in remaining
         assert remaining.get(other_key) == 128_000
 
     def test_codex_fallback_is_not_persisted(self, tmp_path, monkeypatch):
