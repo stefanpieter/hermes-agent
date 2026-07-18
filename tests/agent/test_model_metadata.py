@@ -670,11 +670,12 @@ class TestCodexOAuthContextLength:
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
         base_url = "https://chatgpt.com/backend-api/codex/"
-        cache_key = f"gpt-5.5@{base_url}"
+        legacy_cache_key = f"gpt-5.5@{base_url}"
+        canonical_cache_key = "gpt-5.5@https://chatgpt.com/backend-api/codex"
         other_key = "other-model@https://api.openai.com/v1/"
         import yaml as _yaml
         cache_file.write_text(_yaml.dump({"context_lengths": {
-            cache_key: 1_050_000,
+            legacy_cache_key: 1_050_000,
             other_key: 128_000,
         }}))
 
@@ -698,7 +699,8 @@ class TestCodexOAuthContextLength:
 
         assert ctx == 272_000
         remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
-        assert remaining.get(cache_key) == 272_000
+        assert remaining.get(canonical_cache_key) == 272_000
+        assert legacy_cache_key not in remaining
         assert remaining.get(other_key) == 128_000
 
     def test_codex_cache_is_used_offline_but_reconciled_when_authenticated(self, tmp_path, monkeypatch):
