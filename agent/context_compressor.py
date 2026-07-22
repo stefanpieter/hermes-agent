@@ -2827,6 +2827,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         if cls._is_context_summary_content(content):
             return True
         text = _content_text_for_contains(content).strip()
+        try:
+            from agent.turn_finalizer import is_auto_continue_on_max_iterations_prompt
+        except Exception:
+            is_auto_continue_on_max_iterations_prompt = None
+        if callable(
+            is_auto_continue_on_max_iterations_prompt
+        ) and is_auto_continue_on_max_iterations_prompt(text):
+            return True
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,

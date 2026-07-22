@@ -42,6 +42,7 @@ from typing import Any, Optional, Tuple
 
 from agent.context_engine import sanitize_memory_context
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.turn_finalizer import AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -654,6 +655,7 @@ _SYNTHETIC_USER_PREFIXES = (
     "[System: The previous response was cut off",
     "[System: Your previous tool call",
     "[Your active task list was preserved across context compression]",
+    AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER,
     "[IMPORTANT: Background process ",
 )
 
