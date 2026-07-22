@@ -4,6 +4,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from acp.schema import TextContentBlock
 
+import acp_adapter.server as acp_server
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 
@@ -196,3 +197,31 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_reconnect_clears_background_notification_session_ownership(monkeypatch):
+    """A reconnected ACP client must not inherit old session notification ownership."""
+    acp_agent, _state, _fake, conn1 = make_agent_and_state()
+    acp_agent._connected_session_ids.add("old-acp-session")
+
+    conn2 = CaptureConn()
+    acp_agent.on_connect(conn2)  # type: ignore[arg-type]
+
+    assert acp_agent._conn is conn2
+    assert acp_agent._connected_session_ids == set()
+
+    def fail_if_drained(*_args, **_kwargs):
+        raise AssertionError("reconnected ACP client must not drain old-session events")
+
+    monkeypatch.setattr(
+        acp_server.process_registry,
+        "drain_notifications",
+        fail_if_drained,
+    )
+
+    delivered = await acp_agent._dispatch_background_notifications_once()
+
+    assert delivered == 0
+    assert conn1.updates == []
+    assert conn2.updates == []

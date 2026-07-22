@@ -2464,6 +2464,28 @@ def terminal_tool(
                 default_cwd=cwd,
                 session_key=session_key,
             )
+            requested_notify_on_complete = bool(notify_on_complete)
+            requested_watch_patterns = watch_patterns
+            watch_patterns, conflict_note = _resolve_notification_flag_conflict(
+                notify_on_complete=requested_notify_on_complete,
+                watch_patterns=watch_patterns,
+                background=bool(background),
+            )
+            notify_unsupported = ""
+            if requested_notify_on_complete or requested_watch_patterns:
+                from gateway.session_context import async_delivery_supported as _async_ok
+
+                if not _async_ok():
+                    notify_on_complete = False
+                    watch_patterns = None
+                    notify_unsupported = (
+                        "notify_on_complete / watch_patterns are not available in "
+                        "this session — it cannot receive an async completion after "
+                        "the turn ends (a one-shot runner such as `hermes -z` or a "
+                        "cron job, or a stateless HTTP endpoint). The process is "
+                        "running in the background; retrieve its result with "
+                        "process(action='poll') or process(action='wait')."
+                    )
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2512,7 +2534,7 @@ def terminal_tool(
                 # surface the result. Cheap nudge here costs ~one read for
                 # server cases (false positive) and prevents silent
                 # blindness for bounded-task cases (false negative).
-                if background and not notify_on_complete and not watch_patterns:
+                if background and not requested_notify_on_complete and not requested_watch_patterns:
                     result_data["hint"] = (
                         "background=true without notify_on_complete=true means "
                         "this process runs SILENTLY — you will not be told when "
@@ -2607,63 +2629,37 @@ def terminal_tool(
 
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
-                # routed back to the correct chat/thread.
-                if background and (notify_on_complete or watch_patterns):
-                    from gateway.session_context import (
-                        async_delivery_supported as _async_ok,
-                        get_session_env as _gse,
+                # routed back to the correct chat/thread.  Async-unsupported
+                # sessions are rejected before spawn, so the ProcessSession never
+                # carries a notify/watch promise this channel cannot fulfil.
+                if notify_unsupported:
+                    proc_session.notify_on_complete = False
+                    proc_session.watch_patterns = []
+                    result_data["notify_on_complete"] = False
+                    result_data["notify_unsupported"] = notify_unsupported
+                    logger.info(
+                        "background proc %s: async delivery unsupported on this "
+                        "session; notify_on_complete/watch_patterns disabled",
+                        proc_session.id,
                     )
 
-                    # Stateless request/response sessions (the API server /
-                    # WebUI path) cannot route a completion back to the agent
-                    # after the turn ends — there is no persistent channel and
-                    # send() is a no-op. Registering a watcher there silently
-                    # no-ops (issue #10760). Refuse the promise instead: drop
-                    # the flags and tell the agent to poll.
-                    if not _async_ok():
-                        notify_on_complete = False
-                        watch_patterns = None
-                        result_data["notify_on_complete"] = False
-                        result_data["notify_unsupported"] = (
-                            "notify_on_complete / watch_patterns are not available in "
-                            "this session — it cannot receive an async completion after "
-                            "the turn ends (a one-shot runner such as `hermes -z` or a "
-                            "cron job, or a stateless HTTP endpoint). The process is "
-                            "running in the background; retrieve its result with "
-                            "process(action='poll') or process(action='wait')."
-                        )
-                        logger.info(
-                            "background proc %s: async delivery unsupported on this "
-                            "session; notify_on_complete/watch_patterns disabled",
-                            proc_session.id,
-                        )
-                    else:
-                        _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
-                        if _gw_platform:
-                            _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
-                            _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
-                            _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
-                            _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
-                            _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
-                            proc_session.watcher_platform = _gw_platform
-                            proc_session.watcher_chat_id = _gw_chat_id
-                            proc_session.watcher_user_id = _gw_user_id
-                            proc_session.watcher_user_name = _gw_user_name
-                            proc_session.watcher_thread_id = _gw_thread_id
-                            proc_session.watcher_message_id = _gw_message_id
+                if background and (notify_on_complete or watch_patterns):
+                    from gateway.session_context import get_session_env as _gse
 
-                # Mutual exclusion: if both notify_on_complete and watch_patterns
-                # are set, drop watch_patterns. The combination produces duplicate
-                # notifications (one per match + one on exit) that deliver
-                # asynchronously and can spam the user long after the process ends.
-                # notify_on_complete is the more useful signal for "let me know
-                # when the task finishes"; watch_patterns should be reserved for
-                # standalone mid-process signals on long-lived processes.
-                watch_patterns, conflict_note = _resolve_notification_flag_conflict(
-                    notify_on_complete=bool(notify_on_complete),
-                    watch_patterns=watch_patterns,
-                    background=bool(background),
-                )
+                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
+                    if _gw_platform:
+                        _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+                        _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
+                        _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
+                        proc_session.watcher_platform = _gw_platform
+                        proc_session.watcher_chat_id = _gw_chat_id
+                        proc_session.watcher_user_id = _gw_user_id
+                        proc_session.watcher_user_name = _gw_user_name
+                        proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
+
                 if conflict_note:
                     logger.warning("background proc %s: %s", proc_session.id, conflict_note)
                     result_data["watch_patterns_ignored"] = conflict_note
