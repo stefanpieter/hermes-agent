@@ -431,10 +431,11 @@ class TestDefaultContextLengths:
 # =========================================================================
 
 class TestCodexOAuthContextLength:
-    """ChatGPT Codex OAuth context windows come from the authenticated
-    /models catalogue and may differ from the static fallback table or the
-    direct OpenAI API allocation. The fallback values below are conservative
-    defaults used only when the live probe is unavailable.
+    """ChatGPT Codex OAuth exposes provider-specific context metadata.
+
+    Hermes follows the maximum-context policy: prefer each live model entry's
+    positive ``max_context_window``, fall back to ``context_window``, and use
+    provider-specific offline defaults only when live metadata is unavailable.
     """
 
     def setup_method(self):
@@ -448,8 +449,11 @@ class TestCodexOAuthContextLength:
         from agent.model_metadata import get_model_context_length
 
         expected = {
+            "gpt-5.6-sol": 372_000,
+            "gpt-5.6-terra": 372_000,
+            "gpt-5.6-luna": 372_000,
             "gpt-5.5": 272_000,
-            "gpt-5.4": 272_000,
+            "gpt-5.4": 1_000_000,
             "gpt-5.4-mini": 272_000,
             "gpt-5.3-codex": 272_000,
             "gpt-5.3-codex-spark": 128_000,
@@ -472,17 +476,24 @@ class TestCodexOAuthContextLength:
                     "(models.dev leakage?)"
                 )
 
-    def test_live_probe_overrides_fallback(self):
-        """When a token is provided, the live /models probe is preferred
-        and its context_window drives the result."""
+    def test_live_probe_prefers_maximum_and_falls_back_to_context_window(self):
+        """Live maxima win, while absent/invalid maxima use context_window."""
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {
             "models": [
-                {"slug": "gpt-5.5", "context_window": 300_000},
-                {"slug": "gpt-5.4", "context_window": 400_000},
+                {
+                    "slug": "gpt-5.5",
+                    "context_window": 300_000,
+                    "max_context_window": None,
+                },
+                {
+                    "slug": "gpt-5.4",
+                    "context_window": 400_000,
+                    "max_context_window": 1_000_000,
+                },
             ]
         }
 
@@ -502,7 +513,7 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
         assert ctx_55 == 300_000
-        assert ctx_54 == 400_000
+        assert ctx_54 == 1_000_000
 
     def test_live_catalogue_cache_is_scoped_to_access_token(self):
         """Different OAuth tokens must not share entitlement-specific metadata."""
@@ -664,7 +675,7 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == 272_000
+        assert ctx == 372_000
         mock_save.assert_not_called()
         assert not cache_file.exists()
 
@@ -677,7 +688,7 @@ class TestCodexOAuthContextLength:
         base_url = "https://chatgpt.com/backend-api/codex"
         import yaml as _yaml
         cache_file.write_text(_yaml.dump({"context_lengths": {
-            f"gpt-5.6-terra@{base_url}": 372_000,
+            f"gpt-5.6-terra@{base_url}": 350_000,
         }}))
 
         fake_response = MagicMock()
@@ -692,10 +703,10 @@ class TestCodexOAuthContextLength:
                 provider="openai-codex",
             )
 
-        assert ctx == 272_000
+        assert ctx == 372_000
         mock_get.assert_called_once()
         remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
-        assert remaining.get(f"gpt-5.6-terra@{base_url}") == 372_000
+        assert remaining.get(f"gpt-5.6-terra@{base_url}") == 350_000
 
 
 # =========================================================================
