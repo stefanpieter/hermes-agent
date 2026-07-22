@@ -125,7 +125,13 @@ def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
 
 
 def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+    """Fetch raw visible models from the Codex API, sorted by priority.
+
+    This function intentionally returns only slugs present in the authenticated
+    account catalog. Callers that are building picker/catalog UI may layer
+    forward-compat synthetic models on top; runtime routing must not confuse
+    those synthetic entries with live-supported account models.
+    """
     try:
         import httpx
         headers = {"Authorization": f"Bearer {access_token}"}
@@ -165,7 +171,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return [slug for _, slug in sortable]
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -232,7 +238,7 @@ def get_live_codex_model_ids(access_token: Optional[str]) -> List[str]:
     """
     if not access_token:
         return []
-    return _add_forward_compat_models(_fetch_models_from_api(access_token))
+    return _fetch_models_from_api(access_token)
 
 
 def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:

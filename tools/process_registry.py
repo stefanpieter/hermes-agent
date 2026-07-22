@@ -745,11 +745,11 @@ class ProcessRegistry:
                     name=f"proc-pty-reader-{session.id}",
                 )
                 session._reader_thread = reader
-                reader.start()
-
                 with self._lock:
                     self._prune_if_needed()
                     self._running[session.id] = session
+
+                reader.start()
 
                 self._write_checkpoint()
                 return session
@@ -797,11 +797,11 @@ class ProcessRegistry:
                 name=f"proc-reader-{session.id}",
             )
             session._reader_thread = reader
-            reader.start()
-
             with self._lock:
                 self._prune_if_needed()
                 self._running[session.id] = session
+
+            reader.start()
 
             self._write_checkpoint()
         except Exception:
@@ -823,6 +823,8 @@ class ProcessRegistry:
                 proc.wait(timeout=5)
             except Exception:
                 pass
+            with self._lock:
+                self._running.pop(session.id, None)
             raise
 
         return session
@@ -1082,15 +1084,17 @@ class ProcessRegistry:
         completion notification is enqueued.
         """
         with self._lock:
-            was_running = self._running.pop(session.id, None) is not None
-            self._finished[session.id] = session
+            already_finished = session.id in self._finished
+            self._running.pop(session.id, None)
+            if not already_finished:
+                self._finished[session.id] = session
         session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
-        if was_running and session.notify_on_complete:
+        if not already_finished and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
