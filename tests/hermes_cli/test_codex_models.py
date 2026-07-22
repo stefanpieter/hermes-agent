@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    get_codex_model_ids,
+    get_live_codex_model_ids,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -75,6 +79,18 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
         "gpt-5.4",
         "gpt-5.3-codex-spark",
     ]
+
+
+def test_get_live_codex_model_ids_excludes_forward_compat_models(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-5.5"],
+    )
+
+    models = get_live_codex_model_ids(access_token="codex-access-token")
+
+    assert models == ["gpt-5.5"]
+    assert "gpt-5.6-sol" not in models
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):

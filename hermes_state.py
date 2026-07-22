@@ -300,6 +300,31 @@ def _strip_background_review_harness(
     return out
 
 
+_STANDING_GOAL_CONTINUATION_PREFIX = "[Continuing toward your standing goal]\nGoal:"
+
+
+def _is_synthetic_user_message_content(content: Any) -> bool:
+    """True for persisted synthetic user turns that should not count as undo targets.
+
+    In-memory CLI/TUI undo already skips synthetic continuation prompts. The
+    durable rewind path also selects its target via ``list_recent_user_messages``;
+    if that DB helper returns synthetic auto-continue rows, /undo can rewind to
+    the synthetic continuation prompt instead of the user's real turn. Keep this
+    helper aligned with the in-memory checks while avoiding an import-time cycle.
+    """
+    if isinstance(content, list):
+        return False
+    text = "" if content is None else str(content)
+    if text.startswith(_STANDING_GOAL_CONTINUATION_PREFIX):
+        return True
+    try:
+        from agent.turn_finalizer import is_auto_continue_on_max_iterations_prompt
+
+        return bool(is_auto_continue_on_max_iterations_prompt(content))
+    except Exception:
+        return text.startswith("[Continuing after max-iteration exhaustion]")
+
+
 def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
     """Format a user-facing 'session DB unavailable' message with cause.
 
@@ -6596,16 +6621,24 @@ class SessionDB:
         session_id: str,
         limit: int = 20,
         include_inactive: bool = False,
+        include_synthetic: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return the *limit* most-recent user messages, newest first.
 
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
         ``preview`` is the first 80 characters of the message content
         (with line breaks collapsed to spaces). Used by the /rewind
-        slash command picker.
+        slash command picker. Synthetic continuation prompts are hidden by
+        default so durable /undo targets the same real user turns as the
+        in-memory history walker.
 
         By default only active messages are returned.
         """
+        requested_limit = max(int(limit), 1)
+        fetch_limit = requested_limit if include_synthetic else min(
+            max(requested_limit * 5, requested_limit + 20),
+            500,
+        )
         active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
@@ -6613,13 +6646,15 @@ class SessionDB:
                 "WHERE session_id = ? AND role = 'user'"
                 f"{active_clause} "
                 "ORDER BY id DESC LIMIT ?",
-                (session_id, int(limit)),
+                (session_id, fetch_limit),
             )
             rows = cursor.fetchall()
 
         result: List[Dict[str, Any]] = []
         for row in rows:
             decoded = self._decode_content(row["content"])
+            if not include_synthetic and _is_synthetic_user_message_content(decoded):
+                continue
             if isinstance(decoded, list):
                 # Multimodal — flatten text parts.
                 text_parts = [
@@ -6643,6 +6678,8 @@ class SessionDB:
                     "preview": preview,
                 }
             )
+            if len(result) >= requested_limit:
+                break
         return result
 
     # =========================================================================
