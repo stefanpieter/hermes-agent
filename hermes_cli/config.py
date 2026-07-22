@@ -992,6 +992,18 @@ DEFAULT_CONFIG = {
             "max_auto_continues": 0,
             "prompt": "",
         },
+        # Opt-in packet generation after repeated compression. mode="packet"
+        # writes a redacted artifact under HERMES_HOME; mode="platform" also
+        # queues SessionDB.request_handoff() for the configured platform. This
+        # path never rotates sessions while compression is in flight.
+        "auto_handoff_on_compression": {
+            "enabled": False,
+            "after_compressions": 2,
+            "max_auto_handoffs": 1,
+            "mode": "packet",
+            "platform": "",
+            "handoff_artifact_dir": "handoffs",
+        },
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
