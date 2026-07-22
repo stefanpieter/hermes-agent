@@ -299,6 +299,46 @@ class TestSessionOps:
         assert leftovers == ["proc_foreign", "proc_ownerless"]
 
     @pytest.mark.asyncio
+    async def test_background_notification_cancellation_requeues_drained_events(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock(side_effect=asyncio.CancelledError)
+        agent._conn = conn
+        agent._connected_session_ids.add("acp-owned")
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+
+        first = {
+            "type": "completion",
+            "session_id": "proc_cancelled_first",
+            "session_key": "acp-owned",
+            "command": "printf one",
+            "exit_code": 0,
+            "output": "one",
+        }
+        second = {
+            "type": "completion",
+            "session_id": "proc_cancelled_second",
+            "session_key": "acp-owned",
+            "command": "printf two",
+            "exit_code": 0,
+            "output": "two",
+        }
+        registry.completion_queue.put(first)
+        registry.completion_queue.put(second)
+
+        with pytest.raises(asyncio.CancelledError):
+            await agent._dispatch_background_notifications_once()
+
+        leftovers = []
+        while not registry.completion_queue.empty():
+            leftovers.append(registry.completion_queue.get_nowait()["session_id"])
+        assert leftovers == ["proc_cancelled_first", "proc_cancelled_second"]
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")

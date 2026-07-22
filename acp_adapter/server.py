@@ -583,7 +583,7 @@ class HermesACPAgent(acp.Agent):
             skip_poll_observed=False,
         )
         delivered = 0
-        for event, text in pending:
+        for index, (event, text) in enumerate(pending):
             session_id = str(event.get("session_key") or "")
             if session_id not in self._connected_session_ids:
                 # drain_notifications preserves legacy ownerless ordinary
@@ -624,6 +624,14 @@ class HermesACPAgent(acp.Agent):
                     process_meta["id"],
                     process_meta["status"],
                 )
+            except asyncio.CancelledError:
+                for remaining_event, _remaining_text in pending[index:]:
+                    process_registry.completion_queue.put(remaining_event)
+                logger.debug(
+                    "ACP background notification dispatcher cancelled; requeued %d undelivered event(s)",
+                    len(pending) - index,
+                )
+                raise
             except Exception:
                 process_registry.completion_queue.put(event)
                 logger.debug(

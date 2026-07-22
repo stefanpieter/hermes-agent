@@ -19,6 +19,7 @@ from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
     compress_context,
 )
+from agent.turn_finalizer import AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER
 from hermes_state import SessionDB
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -312,6 +313,51 @@ def test_continuation_markers_are_not_human_anchors():
         {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT}
     )
     assert not _is_real_user_message({"role": "user", "content": legacy})
+    auto_continue = {
+        "role": "user",
+        "content": f"{AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER}\nContinue autonomously.",
+    }
+    assert not _is_real_user_message(auto_continue)
+    assert ContextCompressor._is_synthetic_compression_user_turn(auto_continue)
+
+
+def test_auto_continue_marker_does_not_suppress_real_user_anchor_restore():
+    auto_continue = {
+        "role": "user",
+        "content": f"{AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER}\nContinue autonomously.",
+    }
+    compressed = [
+        dict(auto_continue),
+        {"role": "assistant", "content": "Compressed progress."},
+    ]
+
+    _ensure_compressed_has_user_turn(
+        [
+            {"role": "user", "content": "Please finish the active update."},
+            {"role": "assistant", "content": "Working."},
+            auto_continue,
+        ],
+        compressed,
+    )
+
+    assert any(
+        message.get("role") == "user"
+        and message.get("content") == "Please finish the active update."
+        for message in compressed
+    )
+
+
+def test_auto_continue_marker_is_not_last_user_tail_anchor(compressor):
+    messages = [
+        {"role": "user", "content": "Please finish the active update."},
+        {"role": "assistant", "content": "Working."},
+        {
+            "role": "user",
+            "content": f"{AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER}\nContinue autonomously.",
+        },
+    ]
+
+    assert compressor._find_last_user_message_idx(messages, 0) == 0
 
 
 def test_static_fallback_does_not_attribute_synthetic_rows_to_user(compressor):
