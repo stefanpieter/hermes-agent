@@ -531,11 +531,22 @@ class HermesACPAgent(acp.Agent):
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
         self._conn = conn
+        self._connected_session_ids = set()
         logger.info("ACP client connected")
         if self._background_notification_task is not None:
             self._background_notification_task.cancel()
         self._background_notification_task = None
         self._ensure_background_notification_task()
+
+    def on_disconnect(self, conn: acp.Client | None = None) -> None:
+        """Clear connection-scoped ownership when the ACP client disconnects."""
+        if conn is not None and self._conn is not conn:
+            return
+        self._conn = None
+        self._connected_session_ids.clear()
+        if self._background_notification_task is not None:
+            self._background_notification_task.cancel()
+        self._background_notification_task = None
 
 
     def _ensure_background_notification_task(self) -> None:

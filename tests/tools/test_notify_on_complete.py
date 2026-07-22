@@ -140,6 +140,28 @@ class TestCompletionQueue:
         completion = registry.completion_queue.get_nowait()
         assert completion["exit_code"] == -15  # from the first (kill) call
 
+    def test_move_to_finished_unregistered_fast_process_enqueues_once(self, registry):
+        """A very fast process can finish before a caller observes it in _running.
+
+        _move_to_finished must treat the first finish for an unregistered-but-
+        known session as the first move, not suppress notify_on_complete just
+        because the reader thread won the spawn-registration race.
+        """
+        s = _make_session(notify_on_complete=True, output="fast done", exit_code=0)
+        s.exited = True
+        s.exit_code = 0
+
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+            registry._move_to_finished(s)
+
+        assert s.id in registry._finished
+        assert registry.completion_queue.qsize() == 1
+        completion = registry.completion_queue.get_nowait()
+        assert completion["session_id"] == s.id
+        assert completion["exit_code"] == 0
+        assert "fast done" in completion["output"]
+
     def test_kill_process_sets_completion_reason_and_source(self, registry):
         s = _make_session(notify_on_complete=True, output="stopping")
         s.process = MagicMock()
@@ -547,6 +569,64 @@ def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
         f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
     )
     assert result.get("notify_on_complete") is True
+
+
+def test_background_notify_unsupported_does_not_mark_session_for_notify(monkeypatch, tmp_path):
+    """Stateless sessions must not leave notify_on_complete true on the process.
+
+    The user-facing JSON can say the promise is unsupported, but the underlying
+    ProcessSession must also be cleared so no completion event is queued later.
+    """
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    from types import SimpleNamespace
+    from gateway import session_context
+    from tools import process_registry as process_registry_module
+
+    captured = {}
+
+    def fake_spawn_local(**kwargs):
+        captured["notify_arg"] = kwargs.get("notify_on_complete")
+        session = SimpleNamespace(
+            id="proc_notify_unsupported",
+            pid=4242,
+            notify_on_complete=kwargs.get("notify_on_complete"),
+            watch_patterns=[],
+            watcher_platform="",
+            watcher_chat_id="",
+            watcher_user_id="",
+            watcher_user_name="",
+            watcher_thread_id="",
+            watcher_message_id="",
+            watcher_interval=0,
+        )
+        captured["session"] = session
+        return session
+
+    monkeypatch.setattr(
+        process_registry_module.process_registry,
+        "spawn_local",
+        fake_spawn_local,
+    )
+    session_context.declare_stateless_channel()
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="pytest tests/",
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        session_context.reset_session_vars()
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert captured["notify_arg"] is False
+    assert captured["session"].notify_on_complete is False
+    assert captured["session"].watch_patterns == []
+    assert result.get("notify_on_complete") is False
+    assert "notify_unsupported" in result
+    assert "hint" not in result
 
 
 def test_background_with_watch_patterns_does_not_emit_hint(monkeypatch, tmp_path):

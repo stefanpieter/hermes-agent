@@ -829,6 +829,27 @@ class TestResolveProviderClientUniversalModelFallback:
         assert client.chat.completions._model == "gpt-5.4"
         assert model == "gpt-5.4"
 
+    def test_resolve_provider_client_returns_selected_codex_model_for_stale_request(self):
+        """The public resolver must return the builder-selected live Codex model.
+
+        _build_codex_client() can replace a stale requested model with the first
+        live account-catalog model. resolve_provider_client() must propagate that
+        selected model to callers instead of reporting the stale request label.
+        """
+        from agent.auxiliary_client import resolve_provider_client
+
+        with (
+            patch(
+                "agent.auxiliary_client._build_codex_client",
+                return_value=(MagicMock(), "gpt-5.4"),
+            ) as mock_build,
+        ):
+            client, model = resolve_provider_client("openai-codex", "gpt-5.2-codex")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_build.call_args.args[0] == "gpt-5.2-codex"
+
     def test_codex_keeps_explicit_model_when_live_catalog_unavailable(self):
         """A user-selected Codex model is still used when live discovery is unavailable."""
         import agent.auxiliary_client as aux
