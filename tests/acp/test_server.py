@@ -270,9 +270,19 @@ class TestSessionOps:
         delivered = await agent._dispatch_background_notifications_once()
 
         assert delivered == 1
-        conn.session_update.assert_awaited_once()
-        assert conn.session_update.await_args.kwargs["session_id"] == "acp-owned"
-        update = conn.session_update.await_args.kwargs["update"]
+        raw_notifications = [
+            call.kwargs
+            for call in conn.session_update.await_args_list
+            if call.kwargs["update"].field_meta.get("hermes", {}).get(
+                "backgroundNotification"
+            )
+            and not call.kwargs["update"].field_meta.get("hermes", {}).get(
+                "autonomousTurn"
+            )
+        ]
+        assert len(raw_notifications) == 1
+        assert raw_notifications[0]["session_id"] == "acp-owned"
+        update = raw_notifications[0]["update"]
         assert update.session_update == "agent_message_chunk"
         assert update.field_meta == {
             "hermes": {
@@ -287,6 +297,169 @@ class TestSessionOps:
         }
         assert "proc_owned completed normally" in update.content.text
         assert registry.completion_queue.get_nowait()["session_id"] == "proc_foreign"
+
+    @pytest.mark.asyncio
+    async def test_idle_background_completion_runs_an_autonomous_followup_turn(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        state = agent.session_manager.create_session(cwd="/tmp")
+        agent._conn = conn
+        agent._connected_session_ids.add(state.session_id)
+        agent.prompt = AsyncMock(
+            return_value=PromptResponse(stop_reason="end_turn")
+        )
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_followup",
+            "session_key": state.session_id,
+            "command": "printf done",
+            "exit_code": 0,
+            "output": "done",
+        })
+
+        assert await agent._dispatch_background_notifications_once() == 1
+        task = agent._background_continuation_tasks[state.session_id]
+        await asyncio.wait_for(task, timeout=0.5)
+
+        agent.prompt.assert_awaited_once()
+        prompt_block = agent.prompt.await_args.kwargs["prompt"][0]
+        assert "proc_followup completed normally" in prompt_block.text
+        lifecycle = [
+            call.kwargs["update"].field_meta["hermes"]["autonomousTurn"]["status"]
+            for call in conn.session_update.await_args_list
+            if call.kwargs["update"].field_meta.get("hermes", {}).get(
+                "autonomousTurn"
+            )
+        ]
+        assert lifecycle == ["running", "completed"]
+
+    @pytest.mark.asyncio
+    async def test_background_completion_waits_for_busy_turn_then_continues(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        state = agent.session_manager.create_session(cwd="/tmp")
+        state.is_running = True
+        agent._conn = conn
+        agent._connected_session_ids.add(state.session_id)
+        agent.prompt = AsyncMock(
+            return_value=PromptResponse(stop_reason="end_turn")
+        )
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": "proc_busy",
+            "session_key": state.session_id,
+            "command": "printf done",
+            "exit_code": 0,
+            "output": "done",
+        })
+
+        await agent._dispatch_background_notifications_once()
+        await asyncio.sleep(0.05)
+        agent.prompt.assert_not_awaited()
+
+        with state.runtime_lock:
+            state.is_running = False
+        task = agent._background_continuation_tasks[state.session_id]
+        await asyncio.wait_for(task, timeout=0.5)
+        agent.prompt.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_coalesces_simultaneous_background_completions_into_one_turn(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        state = agent.session_manager.create_session(cwd="/tmp")
+        agent._conn = conn
+        agent._connected_session_ids.add(state.session_id)
+        agent.prompt = AsyncMock(
+            return_value=PromptResponse(stop_reason="end_turn")
+        )
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+        for process_id in ("proc_one", "proc_two"):
+            registry.completion_queue.put({
+                "type": "completion",
+                "session_id": process_id,
+                "session_key": state.session_id,
+                "command": "printf done",
+                "exit_code": 0,
+                "output": "done",
+            })
+
+        assert await agent._dispatch_background_notifications_once() == 2
+        task = agent._background_continuation_tasks[state.session_id]
+        await asyncio.wait_for(task, timeout=0.5)
+
+        agent.prompt.assert_awaited_once()
+        prompt_text = agent.prompt.await_args.kwargs["prompt"][0].text
+        assert "proc_one completed normally" in prompt_text
+        assert "proc_two completed normally" in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_completion_arriving_during_terminal_lifecycle_is_not_lost(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        completion_update_started = asyncio.Event()
+        allow_completion_update = asyncio.Event()
+
+        async def send_update(*, session_id, update):
+            turn = update.field_meta.get("hermes", {}).get("autonomousTurn", {})
+            if turn.get("status") == "completed" and not completion_update_started.is_set():
+                completion_update_started.set()
+                await allow_completion_update.wait()
+
+        conn = MagicMock()
+        conn.session_update = AsyncMock(side_effect=send_update)
+        state = agent.session_manager.create_session(cwd="/tmp")
+        agent._conn = conn
+        agent._connected_session_ids.add(state.session_id)
+        agent.prompt = AsyncMock(
+            return_value=PromptResponse(stop_reason="end_turn")
+        )
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+
+        def enqueue(process_id):
+            registry.completion_queue.put({
+                "type": "completion",
+                "session_id": process_id,
+                "session_key": state.session_id,
+                "command": "printf done",
+                "exit_code": 0,
+                "output": "done",
+            })
+
+        enqueue("proc_first")
+        await agent._dispatch_background_notifications_once()
+        task = agent._background_continuation_tasks[state.session_id]
+        await asyncio.wait_for(completion_update_started.wait(), timeout=0.5)
+
+        enqueue("proc_during_completed")
+        assert await agent._dispatch_background_notifications_once() == 1
+        allow_completion_update.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert agent.prompt.await_count == 2
+        assert "proc_during_completed" in agent.prompt.await_args_list[1].kwargs[
+            "prompt"
+        ][0].text
 
     @pytest.mark.asyncio
     async def test_background_notification_loop_stops_after_transport_failure(

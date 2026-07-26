@@ -525,6 +525,10 @@ class HermesACPAgent(acp.Agent):
         self._conn: Optional[acp.Client] = None
         self._connected_session_ids: set[str] = set()
         self._background_notification_task: asyncio.Task | None = None
+        self._background_continuation_queues: dict[
+            str, Deque[tuple[acp.Client, dict[str, Any], str, str]]
+        ] = {}
+        self._background_continuation_tasks: dict[str, asyncio.Task] = {}
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -561,7 +565,7 @@ class HermesACPAgent(acp.Agent):
             logger.debug("ACP connection has no running loop for background notifications")
 
     async def _dispatch_background_notifications_once(self) -> int:
-        """Deliver pending process events owned by sessions on this ACP connection."""
+        """Deliver and enqueue events owned by sessions on this ACP connection."""
         conn = self._conn
         if conn is None or not self._connected_session_ids:
             return 0
@@ -577,7 +581,14 @@ class HermesACPAgent(acp.Agent):
 
         for index, (event, text) in enumerate(pending):
             session_id = str(event.get("session_key") or "")
+            claim = ""
             try:
+                from tools.async_delegation import claim_event_delivery
+
+                claim_result = claim_event_delivery(event, "acp-autonomous")
+                if claim_result is None:
+                    continue
+                claim = claim_result
                 event_type = str(event.get("type") or "completion")
                 process_status = "running"
                 if event_type == "completion":
@@ -609,13 +620,24 @@ class HermesACPAgent(acp.Agent):
                     process_meta["id"],
                     process_meta["status"],
                 )
+                self._queue_background_continuation(
+                    conn, session_id, event, text, claim
+                )
             except asyncio.CancelledError:
+                if claim:
+                    from tools.async_delegation import release_event_delivery
+
+                    release_event_delivery(event, claim)
                 # A replacement connection cancels this task while a drained
                 # event may be in flight. Restore the undelivered suffix before
                 # propagating cancellation to the connection-bound loop.
                 requeue_from(index)
                 raise
             except Exception:
+                if claim:
+                    from tools.async_delegation import release_event_delivery
+
+                    release_event_delivery(event, claim)
                 # Preserve this event and every not-yet-attempted owned event.
                 # The transport is no longer usable, so do not repeatedly drain
                 # and retry the same queue entries on this connection.
@@ -629,6 +651,205 @@ class HermesACPAgent(acp.Agent):
                 )
                 break
         return delivered
+
+    def _queue_background_continuation(
+        self,
+        conn: acp.Client,
+        session_id: str,
+        event: dict[str, Any],
+        text: str,
+        claim: str,
+    ) -> None:
+        """Queue one delivered notification for an autonomous Lead follow-up.
+
+        ACP ``session/update`` only renders a notification. It does not create a
+        model turn, so display-only delivery leaves a Lead asleep until the user
+        sends another message. Keep one FIFO worker per ACP session and feed the
+        notification back through ``prompt`` once that session is idle.
+        """
+        queue = self._background_continuation_queues.setdefault(session_id, deque())
+        queue.append((conn, event, text, claim))
+        task = self._background_continuation_tasks.get(session_id)
+        if task is None or task.done():
+            self._background_continuation_tasks[session_id] = asyncio.create_task(
+                self._run_background_continuations(session_id)
+            )
+
+    async def _send_autonomous_turn_lifecycle(
+        self,
+        conn: acp.Client,
+        session_id: str,
+        turn_id: str,
+        status: str,
+    ) -> None:
+        activity_status = "running" if status == "running" else "idle"
+        await conn.session_update(
+            session_id=session_id,
+            update=AgentMessageChunk(
+                session_update="agent_message_chunk",
+                content=TextContentBlock(type="text", text=""),
+                field_meta={
+                    "hermes": {
+                        # Existing clients already accept out-of-band updates
+                        # only when this transport marker is present.
+                        "backgroundNotification": True,
+                        "autonomousTurn": {
+                            "id": turn_id,
+                            "status": status,
+                            "trigger": "background_notification",
+                        },
+                        # Backward-compatible activity metadata keeps the Lead
+                        # composer visibly pulsing before a client learns the
+                        # autonomousTurn lifecycle extension.
+                        "agentActivities": [
+                            {
+                                "id": "primary",
+                                "name": "Hermes Lead",
+                                "status": activity_status,
+                            }
+                        ],
+                    }
+                },
+            ),
+        )
+
+    async def _run_background_continuations(self, session_id: str) -> None:
+        """Consume queued ACP notifications as continuous autonomous turns."""
+        from tools.async_delegation import (
+            complete_event_delivery,
+            release_event_delivery,
+        )
+
+        lifecycle_conn: acp.Client | None = None
+        lifecycle_id = f"background-{session_id}"
+        lifecycle_started = False
+        in_flight: list[tuple[acp.Client, dict[str, Any], str, str]] = []
+
+        def release_and_requeue(
+            entries: list[tuple[acp.Client, dict[str, Any], str, str]],
+        ) -> None:
+            for _conn, queued_event, _text, queued_claim in entries:
+                release_event_delivery(queued_event, queued_claim)
+                process_registry.completion_queue.put(queued_event)
+
+        try:
+            # Let one dispatcher pass enqueue simultaneous completions so the
+            # model receives a single coherent continuation turn.
+            await asyncio.sleep(0)
+            while True:
+                queue = self._background_continuation_queues.get(session_id)
+                if not queue:
+                    if lifecycle_started and lifecycle_conn is not None:
+                        # Briefly debounce completions that land while the model
+                        # is finishing. The UI stays continuously busy rather
+                        # than flashing idle/running between adjacent roles.
+                        await asyncio.sleep(0.1)
+                        queue = self._background_continuation_queues.get(session_id)
+                        if queue:
+                            continue
+                        await self._send_autonomous_turn_lifecycle(
+                            lifecycle_conn,
+                            session_id,
+                            lifecycle_id,
+                            "completed",
+                        )
+                        # session_update yields to the dispatcher. If another
+                        # completion arrived during that await, start a fresh
+                        # lifecycle instead of returning and popping its queue.
+                        queue = self._background_continuation_queues.get(session_id)
+                        if queue:
+                            lifecycle_started = False
+                            lifecycle_conn = None
+                            continue
+                    return
+
+                conn = queue[0][0]
+                if self._conn is not conn or session_id not in self._connected_session_ids:
+                    abandoned = list(queue)
+                    queue.clear()
+                    release_and_requeue(abandoned)
+                    return
+
+                state = self.session_manager.get_session(session_id)
+                if state is None:
+                    abandoned = list(queue)
+                    queue.clear()
+                    release_and_requeue(abandoned)
+                    return
+                with state.runtime_lock:
+                    busy = state.is_running
+                if busy:
+                    await asyncio.sleep(0.05)
+                    continue
+
+                in_flight = []
+                while queue and queue[0][0] is conn:
+                    in_flight.append(queue.popleft())
+
+                if not lifecycle_started:
+                    lifecycle_conn = conn
+                    first_event = in_flight[0][1]
+                    lifecycle_id = str(
+                        first_event.get("delegation_id")
+                        or first_event.get("session_id")
+                        or lifecycle_id
+                    )
+                    await self._send_autonomous_turn_lifecycle(
+                        conn, session_id, lifecycle_id, "running"
+                    )
+                    lifecycle_started = True
+
+                # Re-check transport ownership after the lifecycle await. A
+                # replacement client must never receive an old connection's
+                # autonomous output.
+                if self._conn is not conn or session_id not in self._connected_session_ids:
+                    release_and_requeue(in_flight)
+                    in_flight = []
+                    return
+
+                prompt_text = "\n\n".join(item[2] for item in in_flight)
+                await self.prompt(
+                    prompt=[TextContentBlock(type="text", text=prompt_text)],
+                    session_id=session_id,
+                    _conn_override=conn,
+                    _autonomous=True,
+                )
+                for _conn, completed_event, _text, completed_claim in in_flight:
+                    complete_event_delivery(completed_event, completed_claim)
+                in_flight = []
+        except asyncio.CancelledError:
+            if in_flight:
+                release_and_requeue(in_flight)
+            queue = self._background_continuation_queues.get(session_id)
+            if queue:
+                abandoned = list(queue)
+                queue.clear()
+                release_and_requeue(abandoned)
+            raise
+        except Exception:
+            if in_flight:
+                release_and_requeue(in_flight)
+            queue = self._background_continuation_queues.get(session_id)
+            if queue:
+                abandoned = list(queue)
+                queue.clear()
+                release_and_requeue(abandoned)
+            if lifecycle_started and lifecycle_conn is not None:
+                try:
+                    await self._send_autonomous_turn_lifecycle(
+                        lifecycle_conn, session_id, lifecycle_id, "failed"
+                    )
+                except Exception:
+                    pass
+            logger.warning(
+                "ACP autonomous background continuation failed for %s",
+                session_id,
+                exc_info=True,
+            )
+        finally:
+            queue = self._background_continuation_queues.get(session_id)
+            if not queue:
+                self._background_continuation_queues.pop(session_id, None)
 
     async def _background_notification_loop(self, conn: acp.Client) -> None:
         """Poll the shared completion queue while this ACP connection is active."""
@@ -1447,6 +1668,11 @@ class HermesACPAgent(acp.Agent):
     ) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
         self._ensure_background_notification_task()
+        # Server-initiated continuation turns are bound to the ACP connection
+        # that owned the completion. A reconnect must not redirect an old
+        # session's streamed output into the replacement transport.
+        conn_override = kwargs.pop("_conn_override", None)
+        conn = conn_override if conn_override is not None else self._conn
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
@@ -1502,9 +1728,9 @@ class HermesACPAgent(acp.Agent):
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
             response_text = self._handle_slash_command(user_text, state)
             if response_text is not None:
-                if self._conn:
+                if conn:
                     update = acp.update_agent_message_text(response_text)
-                    await self._conn.session_update(session_id, update)
+                    await conn.session_update(session_id, update)
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
@@ -1517,18 +1743,17 @@ class HermesACPAgent(acp.Agent):
                 queued_text = user_text or "[Image attachment]"
                 state.queued_prompts.append(queued_text)
                 depth = len(state.queued_prompts)
-                if self._conn:
+                if conn:
                     update = acp.update_agent_message_text(
                         f"Queued for the next turn. ({depth} queued)"
                     )
-                    await self._conn.session_update(session_id, update)
+                    await conn.session_update(session_id, update)
                 return PromptResponse(stop_reason="end_turn")
             state.is_running = True
             state.current_prompt_text = user_text or "[Image attachment]"
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
-        conn = self._conn
         loop = asyncio.get_running_loop()
 
         if state.cancel_event:
