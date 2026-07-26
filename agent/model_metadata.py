@@ -1895,11 +1895,11 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
-# Known ChatGPT Codex OAuth maximum context windows (observed via the live
-# chatgpt.com/backend-api/codex/models catalogue). Hermes prefers each model's
-# positive `max_context_window` and falls back to `context_window` when the
-# maximum field is absent. These values are provider-specific: the direct
-# OpenAI API may advertise a different maximum for the same slug.
+# Known ChatGPT Codex OAuth context windows (observed via live
+# chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
+# `context_window` values, which are what Codex actually enforces — the
+# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
+# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
 #
 # Used as a fallback when the live probe fails (no token, network error).
 # Longest keys first so substring match picks the most specific entry.
@@ -1915,11 +1915,11 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
-    "gpt-5.6-sol": 372_000,
-    "gpt-5.6-terra": 372_000,
-    "gpt-5.6-luna": 372_000,
+    "gpt-5.6-sol": 272_000,
+    "gpt-5.6-terra": 272_000,
+    "gpt-5.6-luna": 272_000,
     "gpt-5.5": 272_000,
-    "gpt-5.4": 1_000_000,
+    "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
     "gpt-5": 272_000,
 }
@@ -2011,19 +2011,12 @@ def _fetch_codex_oauth_context_lengths_with_source(
         if not isinstance(item, dict):
             continue
         slug = item.get("slug")
-        context_window = item.get("context_window")
-        maximum_window = item.get("max_context_window")
-        selected_window = (
-            maximum_window
-            if isinstance(maximum_window, int) and maximum_window > 0
-            else context_window
-        )
-        if (
-            isinstance(slug, str)
-            and isinstance(selected_window, int)
-            and selected_window > 0
-        ):
-            result[slug.strip()] = selected_window
+        # Deliberately ignore max_context_window here. It is the raw model
+        # ceiling, while context_window is the request/session limit enforced
+        # by chatgpt.com/backend-api/codex (GPT-5.4 can report 1M vs 272K).
+        ctx = item.get("context_window")
+        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
+            result[slug.strip()] = ctx
 
     if result:
         _codex_oauth_context_cache[cache_key] = (result, now)
@@ -2031,14 +2024,13 @@ def _fetch_codex_oauth_context_lengths_with_source(
 
 
 def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
-    """Probe the ChatGPT Codex /models endpoint for per-slug maximum windows.
+    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
 
     Codex OAuth imposes its own context limits that differ from the direct
     OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
-    A positive ``max_context_window`` is preferred; ``context_window`` is the
-    fallback when no separate maximum is advertised.
+    `context_window` field in each model entry is the authoritative source.
 
-    Returns a ``{slug: maximum_context_window}`` dict. Empty on failure.
+    Returns a ``{slug: context_window}`` dict. Empty on failure.
     """
     result, _fresh = _fetch_codex_oauth_context_lengths_with_source(access_token)
     return result
