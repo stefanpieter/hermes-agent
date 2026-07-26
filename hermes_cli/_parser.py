@@ -147,6 +147,18 @@ def build_top_level_parser():
             "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--fallback",
+        dest="fallbacks",
+        action="append",
+        default=None,
+        metavar="PROVIDER/MODEL",
+        help=(
+            "Invocation-scoped fallback route. Repeat to define an exact ordered chain; "
+            "when supplied, replaces profile fallback configuration for this invocation."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -316,6 +328,15 @@ def build_top_level_parser():
         # `--provider` flag.
         default=argparse.SUPPRESS,
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--fallback",
+        dest="fallbacks",
+        action="append",
+        default=argparse.SUPPRESS,
+        metavar="PROVIDER/MODEL",
+        help="Invocation-scoped fallback route; repeat for an exact ordered chain.",
     )
     chat_parser.add_argument(
         "-v",

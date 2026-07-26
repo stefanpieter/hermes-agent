@@ -337,3 +337,64 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+class TestInvocationFallbackFlags:
+    @pytest.fixture
+    def real_parser(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat = build_top_level_parser()
+        return parser
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--fallback", "openai-codex/gpt-5.6-sol", "chat"],
+            ["chat", "--fallback", "openai-codex/gpt-5.6-sol"],
+        ],
+    )
+    def test_single_fallback_survives_parent_and_chat_positions(self, real_parser, argv):
+        args = real_parser.parse_args(argv)
+        assert args.fallbacks == ["openai-codex/gpt-5.6-sol"]
+
+    def test_repeated_fallbacks_preserve_order(self, real_parser):
+        args = real_parser.parse_args(
+            [
+                "chat",
+                "--fallback",
+                "openai-codex/gpt-5.6-sol",
+                "--fallback",
+                "gemini/gemini-3.1-pro-preview",
+            ]
+        )
+        assert args.fallbacks == [
+            "openai-codex/gpt-5.6-sol",
+            "gemini/gemini-3.1-pro-preview",
+        ]
+
+    def test_cmd_chat_forwards_fallbacks(self, monkeypatch, real_parser):
+        import types
+
+        import hermes_cli.main as main_mod
+
+        args = real_parser.parse_args(
+            ["chat", "--fallback", "openai-codex/gpt-5.6-sol"]
+        )
+        captured = {}
+        fake_cli = types.ModuleType("cli")
+        setattr(fake_cli, "main", lambda **kwargs: captured.update(kwargs))
+        fake_banner = types.ModuleType("hermes_cli.banner")
+        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_skills_sync = types.ModuleType("tools.skills_sync")
+        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+
+        monkeypatch.setitem(sys.modules, "cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
+        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
+
+        main_mod.cmd_chat(args)
+
+        assert captured["fallbacks"] == ["openai-codex/gpt-5.6-sol"]
